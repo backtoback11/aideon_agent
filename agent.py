@@ -25,6 +25,10 @@ from multitransfer_step3 import step3_fill_recipient_and_sender
 from multitransfer_step4 import step4_wait_for_deeplink  # НОВЫЙ ШАГ 4
 
 
+# Максимальное количество инвойсов, которые агент обрабатывает параллельно
+MAX_CONCURRENT_INVOICES = 3
+
+
 # ============================================================
 #   УТИЛИТЫ ДЛЯ СЕССИИ (settings в БД)
 # ============================================================
@@ -50,7 +54,7 @@ def _mark_session_status(status: str, message: str = "") -> None:
 
     status:
       - ok             — всё норм, агент в рабочем состоянии
-      - working        — сейчас обрабатываем инвойс
+      - working        — сейчас обрабатываем инвойс(ы)
       - error          — сессия/страница в ошибке
     """
     now = datetime.utcnow().isoformat(timespec="seconds")
@@ -115,6 +119,53 @@ def get_next_invoice() -> Optional[Invoice]:
 
 
 # ============================================================
+#   ПОДСВЕТКА ВКЛАДКИ ДЛЯ КАПЧИ
+# ============================================================
+
+async def highlight_captcha_tab(page: Page, invoice: Invoice) -> None:
+    """
+    Поднимаем вкладку на передний план и показываем красный баннер,
+    чтобы оператор сразу видел, где проходить капчу.
+    """
+    try:
+        await page.bring_to_front()
+    except Exception as e:
+        print(f"[CAPTCHA] Не удалось поднять вкладку invoice={invoice.id}: {e}")
+
+    try:
+        await page.evaluate(
+            """
+            (invoiceId) => {
+                const id = 'aideon-captcha-banner';
+                let el = document.getElementById(id);
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = id;
+                    el.style.position = 'fixed';
+                    el.style.top = '0';
+                    el.style.left = '0';
+                    el.style.right = '0';
+                    el.style.zIndex = '999999';
+                    el.style.background = '#ff3333';
+                    el.style.color = '#fff';
+                    el.style.padding = '10px 16px';
+                    el.style.fontSize = '16px';
+                    el.style.fontFamily = 'sans-serif';
+                    el.style.textAlign = 'center';
+                    el.style.boxShadow = '0 2px 6px rgba(0,0,0,0.3)';
+                    document.body.appendChild(el);
+                }
+                el.textContent = 'Aideon Agent: пройди капчу для инвойса ' + invoiceId;
+            }
+            """,
+            invoice.id,
+        )
+        print(f"[CAPTCHA] Вкладка для invoice={invoice.id} подсвечена (баннер капчи).")
+    except Exception as e:
+        print(f"[CAPTCHA] Не удалось показать баннер для invoice={invoice.id}: {e}")
+
+
+# ============================================================
 #   ОБРАБОТКА ОДНОГО INVOICE В ОТДЕЛЬНОЙ ВКЛАДКЕ
 # ============================================================
 
@@ -127,8 +178,9 @@ async def process_invoice(context: BrowserContext, invoice: Invoice) -> None:
       3. Шаг 2: выбор оффера/банка (по invoice.recipient_bank).
       4. Шаг 3: заполняем форму получателя/отправителя + галочка + 'Продолжить'.
          → на этом этапе появляется капча, оператор проходит её вручную.
-      5. Шаг 4: ждём финальный экран с QR/СБП-НСПК, вытаскиваем диплинк и
-         сохраняем его в invoice.deeplink.
+         → помечаем invoice.status = 'waiting_captcha' и подсвечиваем вкладку.
+      5. Шаг 4: ждём финальный экран с QR/СБП-НСПК, вытаскиваем диплинк.
+         ВАЖНО: step4 сам шлёт вебхук и управляет финальным статусом/диплинком.
       6. Вкладку НЕ закрываем — остаётся висеть для оператора/дальнейших действий.
     """
     page: Page = await context.new_page()
@@ -136,6 +188,12 @@ async def process_invoice(context: BrowserContext, invoice: Invoice) -> None:
 
     db = SessionLocal()
     try:
+        # подгружаем актуальный объект из БД (на случай, если сессия изменилась)
+        inv_db = db.query(Invoice).filter(Invoice.id == invoice.id).first()
+        if not inv_db:
+            print(f"[ERROR] В БД не найден invoice id={invoice.id}, прекращаем обработку.")
+            return
+
         _mark_session_status("working", f"Processing invoice {invoice.id}")
 
         base_url = MULTITRANSFER_BASE_URL or "https://multitransfer.ru/transfer/uzbekistan"
@@ -143,36 +201,47 @@ async def process_invoice(context: BrowserContext, invoice: Invoice) -> None:
         await page.goto(base_url)
 
         # STEP 1 — сумма + открыть список способов
-        await step1_fill_amount_and_open_methods(page, invoice.amount)
+        await step1_fill_amount_and_open_methods(page, inv_db.amount)
 
         # STEP 2 — выбор оффера/банка
-        await step2_select_bank(page, invoice.recipient_bank)
+        await step2_select_bank(page, inv_db.recipient_bank)
 
         # STEP 3 — форма получателя и отправителя + галочка + 'Продолжить'
-        await step3_fill_recipient_and_sender(page, invoice)
+        await step3_fill_recipient_and_sender(page, inv_db)
 
         print(
             "[FLOW] Шаг 3 завершён, ожидается капча. "
             "Оператор должен пройти капчу и довести поток до экрана с QR/ссылкой."
         )
 
-        # STEP 4 — ждём экран с диплинком/QR и вытаскиваем ссылку
-        deeplink = await step4_wait_for_deeplink(page, invoice)
-
-        # Сохраняем результат в БД
-        invoice.deeplink = deeplink
-        invoice.error_message = None
-        invoice.status = "processed"
+        # Помечаем в БД, что теперь ждём капчу
+        inv_db.status = "waiting_captcha"
+        inv_db.error_message = None
         db.commit()
+        print(f"[FLOW] Invoice {inv_db.id} помечен как waiting_captcha.")
 
-        print(f"[DONE] Invoice {invoice.id} успешно обработан, deeplink сохранён.")
-        _mark_session_status("ok", f"Processed invoice {invoice.id} with deeplink")
+        # Подсветка вкладки для оператора (баннер + bring_to_front)
+        await highlight_captcha_tab(page, inv_db)
+
+        # STEP 4 — ждём экран с диплинком/QR и вытаскиваем ссылку
+        # ВАЖНО: step4 сам управляет диплинком/статусом (через свою логику и/или вебхук).
+        deeplink = await step4_wait_for_deeplink(page, inv_db)
+
+        # Здесь мы НИЧЕГО не меняем в БД —
+        # считаем, что step4 или обработчик вебхука уже сделал всё нужное.
+        print(f"[DONE] Invoice {inv_db.id} успешно обработан, диплинк из STEP4: {deeplink!r}")
+        _mark_session_status("ok", f"Processed invoice {inv_db.id} with deeplink")
 
     except Exception as e:
         print(f"[ERROR] Ошибка обработки invoice={invoice.id}: {e}")
-        invoice.status = "error"
-        invoice.error_message = str(e)
-        db.commit()
+        try:
+            inv_db = db.query(Invoice).filter(Invoice.id == invoice.id).first()
+            if inv_db:
+                inv_db.status = "error"
+                inv_db.error_message = str(e)
+                db.commit()
+        except Exception as e2:
+            print(f"[ERROR] Доп. ошибка при сохранении статуса error для invoice={invoice.id}: {e2}")
         _mark_session_status("error", f"Error while processing invoice {invoice.id}: {e}")
     finally:
         db.close()
@@ -182,7 +251,7 @@ async def process_invoice(context: BrowserContext, invoice: Invoice) -> None:
 
 
 # ============================================================
-#   ГЛАВНЫЙ ЦИКЛ АГЕНТА
+#   ГЛАВНЫЙ ЦИКЛ АГЕНТА (ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА)
 # ============================================================
 
 async def run_agent():
@@ -202,15 +271,37 @@ async def run_agent():
 
         print("[AGENT] Запущен. Жду инвойсы в статусе 'queued'...")
 
-        while True:
-            invoice = get_next_invoice()
-            if not invoice:
-                # Нет задач — просто ждём, сессию/контекст не трогаем
-                await asyncio.sleep(5)
-                continue
+        # Семафор для ограничения числа одновременных инвойсов
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_INVOICES)
+        tasks: set[asyncio.Task] = set()
 
-            print(f"[QUEUE] Берём invoice={invoice.id}")
-            await process_invoice(context, invoice)
+        async def _runner(inv: Invoice):
+            """Обёртка, которая учитывает семафор и пул задач."""
+            async with semaphore:
+                await process_invoice(context, inv)
+
+        while True:
+            # чистим завершённые таски
+            done_tasks = {t for t in tasks if t.done()}
+            if done_tasks:
+                tasks -= done_tasks
+
+            # добираем новые инвойсы, пока есть свободные слоты
+            while len(tasks) < MAX_CONCURRENT_INVOICES:
+                invoice = get_next_invoice()
+                if not invoice:
+                    break
+
+                print(f"[QUEUE] Берём invoice={invoice.id} в обработку (параллельно).")
+                task = asyncio.create_task(_runner(invoice), name=f"invoice-{invoice.id}")
+                tasks.add(task)
+
+            # если задач нет — просто ждём и снова опрашиваем БД
+            if not tasks:
+                await asyncio.sleep(5)
+            else:
+                # если задачи есть — даём им поработать и снова проверяем очередь
+                await asyncio.sleep(1)
 
 
 if __name__ == "__main__":

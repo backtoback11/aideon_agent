@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.status import HTTP_302_FOUND
+from pydantic import BaseModel
 
 from db import SessionLocal, Base, engine
 from models import Invoice, Proxy, Setting
@@ -425,5 +426,77 @@ def toggle_prmoney_worker():
         new_val = "0" if cur == "1" else "1"
         _db_set_setting(db, WORKER_PRMONEY_KEY, new_val)
         return RedirectResponse("/admin", status_code=HTTP_302_FOUND)
+    finally:
+        db.close()
+
+
+# -------------------------------------------------------------
+# CALLBACK ДЛЯ ПОЛУЧЕНИЯ DEEPLINK ПО ИНВОЙСУ
+# -------------------------------------------------------------
+
+class InvoiceDeeplinkPayload(BaseModel):
+    """
+    Payload постбека от воркера / внешней системы с диплинком.
+    Ожидается примерно такой JSON:
+    {
+        "invoice_id": 65,
+        "invoice_external_id": "2640797",
+        "amount": 6000,
+        "currency": "643",
+        "deeplink": "https://qr.nspk.ru/...",
+        "status": "created",
+        "created_at": "2025-12-01T21:15:22"
+    }
+    """
+    invoice_id: int
+    invoice_external_id: str
+    amount: float
+    currency: str
+    deeplink: str
+    status: str
+    created_at: str
+
+
+@app.post("/callbacks/invoice/deeplink", name="invoice_deeplink_callback")
+def invoice_deeplink_callback(payload: InvoiceDeeplinkPayload):
+    """
+    Принимаем постбек с диплинком:
+      - пытаемся найти инвойс по внутреннему ID (invoice_id),
+      - если не нашли, ищем по внешнему invoice_external_id,
+      - обновляем deeplink и статус.
+    """
+    db = SessionLocal()
+    try:
+        # 1) ищем по внутреннему ID (Invoice.id)
+        invoice = db.query(Invoice).filter(Invoice.id == payload.invoice_id).first()
+
+        # 2) если не нашли — пробуем по внешнему invoice_id (строка)
+        if not invoice:
+            invoice = (
+                db.query(Invoice)
+                .filter(Invoice.invoice_id == str(payload.invoice_external_id))
+                .first()
+            )
+
+        if not invoice:
+            print(
+                f"[CALLBACK] Не найден инвойс ни по id={payload.invoice_id}, "
+                f"ни по invoice_id={payload.invoice_external_id}"
+            )
+            raise HTTPException(status_code=404, detail="Invoice not found")
+
+        # Обновляем диплинк и статус
+        invoice.deeplink = payload.deeplink
+        invoice.status = payload.status or "created"
+
+        db.commit()
+        db.refresh(invoice)
+
+        print(
+            f"[CALLBACK] Обновлён инвойс id={invoice.id}: "
+            f"status={invoice.status}, deeplink={invoice.deeplink}"
+        )
+
+        return {"ok": True}
     finally:
         db.close()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Optional
+from typing import Optional, Any, Tuple
 
 from sqlalchemy.exc import IntegrityError
 
@@ -35,12 +35,12 @@ def _set_setting(db, key: str, value: str) -> None:
 
 
 # ============================================================
-# парсинг card_info
+# парсинг card_info (legacy-фолбэк)
 # ============================================================
 
-def _parse_card_info(card_info_raw: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+def _parse_card_info(card_info_raw: Any) -> Tuple[Optional[str], Optional[str]]:
     """
-    card_info хранится строкой JSON, пример:
+    card_info может храниться строкой JSON или dict, пример строки:
       "{\"card_number\":\"9860046602662507\",\"holder\":\"Xujanazarov Islom\"}"
 
     Возвращаем (card_number, holder).
@@ -49,7 +49,11 @@ def _parse_card_info(card_info_raw: Optional[str]) -> tuple[Optional[str], Optio
         return None, None
 
     try:
-        obj = json.loads(card_info_raw)
+        if isinstance(card_info_raw, dict):
+            obj = card_info_raw
+        else:
+            obj = json.loads(card_info_raw)
+
         card_number = obj.get("card_number")
         holder = obj.get("holder")
         return card_number, holder
@@ -84,21 +88,48 @@ def _split_holder(holder: Optional[str]) -> tuple[str, str]:
 def _create_invoice_from_prmoney(db, pr_inv) -> None:
     """
     pr_inv — это объект из fetch_pending_invoices() с полями:
-      id, client_id, amount, status, card_info, ...
+      id, client_id, amount, status, card_number, holder, (опц. card_info, country, bank, currency, ...)
+
     Мы создаём запись в таблице invoices со статусом queued.
 
     ВАЖНО:
-      - card_info: JSON с полями card_number и holder.
-      - банк по умолчанию: UZUM Bank (если не придёт другой).
-      - страна по умолчанию: Uzbekistan (если не придёт другая).
+      - в первую очередь берём card_number / holder из полей PrmoneyInvoice,
+      - при их отсутствии фолбэк в card_info (legacy),
+      - банк по умолчанию: UZUM Bank (если не придёт другой),
+      - страна по умолчанию: Uzbekistan (если не придёт другая),
       - данные отправителя — жёсткий шаблон.
     """
 
     # --- карта и держатель ---
-    card_number, holder = _parse_card_info(getattr(pr_inv, "card_info", None))
+
+    # 1) новый формат — прямые поля объекта PrmoneyInvoice
+    card_number = getattr(pr_inv, "card_number", None)
+    holder = getattr(pr_inv, "holder", None)
+
+    # 2) фолбэк — старый формат через card_info
+    if (not card_number or not holder) and getattr(pr_inv, "card_info", None):
+        parsed_number, parsed_holder = _parse_card_info(getattr(pr_inv, "card_info"))
+        if not card_number:
+            card_number = parsed_number
+        if not holder:
+            holder = parsed_holder
+
+    # 3) подстраховка, чтобы не было пустых значений вообще
+    if not card_number:
+        card_number = "UNKNOWN"
+    if not holder:
+        holder = "Unknown"
+
     last_name, first_name = _split_holder(holder)
 
     invoice_id = str(pr_inv.id)  # используем id PrMoney как внешний invoice_id
+
+    # Лог, чтобы видеть, что реально мапится
+    print(
+        f"[PRMONEY] Маппинг инвойса id={pr_inv.id}: "
+        f"card_number={card_number}, holder={holder}, "
+        f"first_name={first_name}, last_name={last_name}"
+    )
 
     # Проверка на дубль по invoice_id (на всякий случай, помимо PRMONEY_LAST_ID)
     existing = db.query(Invoice).filter(Invoice.invoice_id == invoice_id).first()
@@ -133,30 +164,30 @@ def _create_invoice_from_prmoney(db, pr_inv) -> None:
     )
 
     # --- отправитель — жёсткий шаблон, как обсуждали ---
-    sender_first_name = "Иван"
-    sender_last_name = "Иванов"
+    sender_first_name = "Николай"
+    sender_last_name = "Никифоров"
     sender_middle_name = None
 
     sender_passport_type = "rf_national"
-    sender_passport_series = "0000"
-    sender_passport_number = "000000"
+    sender_passport_series = "8996"
+    sender_passport_number = "340019"
     sender_passport_country = "Россия"
-    sender_passport_issue_date = "01.01.2020"
+    sender_passport_issue_date = "26.08.2021"
 
-    sender_birth_date = "01.01.1990"
+    sender_birth_date = "01.08.2007"
     sender_birth_country = "Россия"
-    sender_birth_place = "Москва"
+    sender_birth_place = "Камышин"
 
     sender_registration_country = "Россия"
-    sender_registration_place = "Москва"
-    sender_phone = "+79990000000"
+    sender_registration_place = "Камышин"
+    sender_phone = "+79872797149"
 
     sender_name = f"{sender_last_name} {sender_first_name}".strip()
 
     inv = Invoice(
         invoice_id=invoice_id,
         amount=float(pr_inv.amount),
-        currency="RUB",
+        currency=(getattr(pr_inv, "currency", None) or "RUB"),
 
         # получатель — новые поля
         recipient_country=recipient_country,
@@ -245,6 +276,8 @@ def _poll_prmoney_once(db) -> None:
         print(
             f"[PRMONEY] Новый инвойс: id={pr_inv.id}, "
             f"amount={pr_inv.amount}, status={pr_inv.status}, "
+            f"card_number={getattr(pr_inv, 'card_number', None)}, "
+            f"holder={getattr(pr_inv, 'holder', None)}, "
             f"card_info={getattr(pr_inv, 'card_info', None)}"
         )
         _create_invoice_from_prmoney(db, pr_inv)

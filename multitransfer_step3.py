@@ -103,7 +103,7 @@ async def _fill_by_label_or_name(
     if label_text:
         try:
             el = page.get_by_label(label_text)
-            await el.wait_for(timeout=5000)
+            await el.wait_for(timeout=2000)
             await el.fill(str(value))
             print(f"[STEP3] Заполнили по label '{label_text}' значением '{value}'")
             return
@@ -136,7 +136,7 @@ async def _select_country_by_label(page: Page, label_text: str, country: Optiona
 
     try:
         label_el = page.get_by_text(label_text, exact=True).first
-        await label_el.wait_for(timeout=5000)
+        await label_el.wait_for(timeout=2000)
 
         # контейнер с самим дропдауном (строка со стрелкой)
         container = label_el.locator("xpath=following-sibling::*[1]")
@@ -309,7 +309,7 @@ async def step3_fill_recipient_and_sender(page: Page, invoice) -> None:
         # 1) По тексту "подтверждаю"
         try:
             consent_text = page.get_by_text("подтверждаю", exact=False).first
-            await consent_text.wait_for(timeout=3000)
+            await consent_text.wait_for(timeout=1500)
             container = consent_text.locator(
                 "xpath=ancestor::*[self::label or self::div][1]"
             )

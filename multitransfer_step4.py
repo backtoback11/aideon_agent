@@ -10,6 +10,9 @@ import requests
 from playwright.async_api import Page
 import importlib.util
 
+from db import SessionLocal
+from models import Invoice as InvoiceModel
+
 DEBUG_DIR_STEP4 = "debug/multitransfer_step4"
 WEBHOOK_URL = "https://joker-pay.com/webhook/tips"
 
@@ -144,6 +147,64 @@ async def _wait_for_final_screen(page: Page) -> bool:
 
 
 # ============================================================
+# ОБНОВЛЕНИЕ ЛОКАЛЬНОЙ БД
+# ============================================================
+
+def _update_local_invoice(invoice, deeplink: str, status: str = "created") -> None:
+    """
+    Обновляем локальный инвойс в базе Aideon Agent:
+      - сначала ищем по внутреннему id (Invoice.id),
+      - если не нашли — по внешнему invoice_id (строка),
+      - пишем deeplink и статус.
+    """
+    try:
+        db = SessionLocal()
+    except Exception as e:
+        print(f"[STEP4-DB] ❌ Не удалось создать сессию БД: {e}")
+        return
+
+    try:
+        inv = None
+
+        inv_id = getattr(invoice, "id", None)
+        inv_ext = getattr(invoice, "invoice_id", None)
+
+        if inv_id is not None:
+            inv = db.query(InvoiceModel).filter(InvoiceModel.id == inv_id).first()
+
+        if not inv and inv_ext is not None:
+            inv = (
+                db.query(InvoiceModel)
+                .filter(InvoiceModel.invoice_id == str(inv_ext))
+                .first()
+            )
+
+        if not inv:
+            print(
+                f"[STEP4-DB] ⚠ Не найден инвойс ни по id={inv_id}, "
+                f"ни по invoice_id={inv_ext}"
+            )
+            return
+
+        inv.deeplink = deeplink
+        inv.status = status
+
+        db.commit()
+        print(
+            f"[STEP4-DB] ✔ Обновлён инвойс id={inv.id}: "
+            f"status={inv.status}, deeplink={inv.deeplink}"
+        )
+    except Exception as e:
+        db.rollback()
+        print(f"[STEP4-DB] ❌ Ошибка при обновлении инвойса: {e}")
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+# ============================================================
 # WEBHOOK
 # ============================================================
 
@@ -164,6 +225,13 @@ def _send_webhook(invoice, deeplink: str):
     try:
         r = requests.post(WEBHOOK_URL, json=payload, timeout=10)
         print(f"[STEP4] Ответ: {r.status_code} {r.text[:200]}")
+
+        # если webhook успешно принял — обновляем локальную БД
+        if 200 <= r.status_code < 300:
+            _update_local_invoice(invoice, deeplink, status="created")
+            print(f"[DONE] Invoice {getattr(invoice, 'id', '?')} успешно обработан, deeplink сохранён.")
+        else:
+            print(f"[STEP4] ⚠ Webhook вернул неуспешный статус: {r.status_code}")
     except Exception as e:
         print(f"[STEP4] Webhook error: {e}")
 
@@ -179,7 +247,7 @@ async def step4_wait_for_deeplink(page: Page, invoice) -> str:
       2) даём 2 секунды на дорисовку QR,
       3) делаем фуллскрин,
       4) отправляем его в GPT-Vision и вытаскиваем URL,
-      5) шлём диплинк вебхуком.
+      5) шлём диплинк вебхуком и обновляем локальную БД.
     """
     print(f"[STEP4] → Ожидание финального экрана для invoice={invoice.id}")
 

@@ -1,4 +1,3 @@
-# vision_qr.py
 from __future__ import annotations
 
 import base64
@@ -12,11 +11,12 @@ from openai import OpenAI
 #  НАСТРОЙКИ
 # ============================================================
 
-# Ключ и модели читаем из переменных окружения
-# Примеры:
-#   export OPENAI_API_KEY="sk-..."
+# Ключ и модели читаем из переменных окружения.
+# Примеры (НЕ коммитить реальные ключи в репозиторий!):
+#   export OPENAI_API_KEY="sk-..."             # реальный ключ только в окружении
 #   export OPENAI_VISION_MODEL="gpt-4o-mini"
 #   export OPENAI_VISION_FALLBACK_MODEL="gpt-4.1"
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 PRIMARY_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
 FALLBACK_MODEL = os.environ.get("OPENAI_VISION_FALLBACK_MODEL", "gpt-4.1")
@@ -39,6 +39,16 @@ def _get_client() -> Optional[OpenAI]:
             "Укажи его в переменных окружения (export OPENAI_API_KEY='...')."
         )
         return None
+
+    # Небольшой дебаг, чтобы видеть, какой ключ реально используется (без утечки)
+    try:
+        print(
+            f"[VISION] Используется OPENAI_API_KEY: "
+            f"prefix={str(OPENAI_API_KEY)[:12]}..., len={len(OPENAI_API_KEY)}"
+        )
+    except Exception:
+        # На всякий случай, если вдруг ключ не строка
+        pass
 
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)

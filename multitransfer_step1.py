@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path  # ← добавили
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
@@ -61,15 +62,20 @@ async def step1_fill_amount_and_open_methods(page: Page, amount: float) -> None:
     # === DEBUG: дамп после ввода суммы ===
     try:
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        html_path = f"debug_step1_after_amount_{ts}.html"
-        png_path = f"debug_step1_after_amount_{ts}.png"
+
+        # новая структура: debug/multitransfer_step1/...
+        debug_dir = Path("debug") / "multitransfer_step1"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        html_path = debug_dir / f"debug_step1_after_amount_{ts}.html"
+        png_path = debug_dir / f"debug_step1_after_amount_{ts}.png"
 
         html = await page.content()
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html)
         print(f"[STEP1-DEBUG] DOM после ввода суммы сохранён в {html_path}")
 
-        await page.screenshot(path=png_path, full_page=True)
+        await page.screenshot(path=str(png_path), full_page=True)
         print(f"[STEP1-DEBUG] Скрин после ввода суммы сохранён в {png_path}")
     except Exception as e:
         print(f"[STEP1-DEBUG] Не удалось сохранить дамп после суммы: {e}")

@@ -50,7 +50,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
     bank_name = (bank_name or "").strip()
     print(f"[STEP2] → Выбор банка/оффера (bank={bank_name!r})")
 
-    await page.wait_for_timeout(4000)
+    await page.wait_for_timeout(2000)
     await _save_step2_html(page, label="before_select")
 
     if not bank_name:
@@ -75,7 +75,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
 
         if attempt == 2:
             print("[STEP2] Вторая попытка — страница могла долго грузиться…")
-            await page.wait_for_timeout(4000)
+            await page.wait_for_timeout(2000)
             await _save_step2_html(page, label="retry_before_select")
 
         for text_variant in search_variants:
@@ -131,7 +131,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
     print("[STEP2] Клик по банку выполнен, ищу кнопку 'Продолжить'…")
 
     try:
-        await page.wait_for_timeout(1600)
+        await page.wait_for_timeout(2000)
         await _save_step2_html(page, label="before_continue")
 
         continue_btn = page.get_by_role("button", name="Продолжить").first
