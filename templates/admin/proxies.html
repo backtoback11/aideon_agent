@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% set active_page = "proxies" %}
+
+{% block title %}Прокси — Aideon Agent{% endblock %}
+
+{% block content %}
+<h1 class="main-title">Прокси</h1>
+
+<div class="card">
+    <h2 class="card-title">Добавить прокси</h2>
+
+    <form method="post" action="/admin/proxies/add" class="form-grid">
+        <div class="form-group">
+            <label>Label</label>
+            <input type="text" name="label" placeholder="Название / комментарий">
+        </div>
+
+        <div class="form-group">
+            <label>Host *</label>
+            <input type="text" name="host" required placeholder="45.148.240.152">
+        </div>
+
+        <div class="form-group">
+            <label>HTTP порт</label>
+            <input type="number" name="port_http" placeholder="63030">
+        </div>
+
+        <div class="form-group">
+            <label>SOCKS5 порт</label>
+            <input type="number" name="port_socks5" placeholder="63031">
+        </div>
+
+        <div class="form-group">
+            <label>Логин</label>
+            <input type="text" name="username" placeholder="ULCJDDCg">
+        </div>
+
+        <div class="form-group">
+            <label>Пароль</label>
+            <input type="text" name="password" placeholder="WdE3AkhE">
+        </div>
+
+        <div class="form-group">
+            <label>Протокол</label>
+            <select name="protocol">
+                <option value="http">HTTP</option>
+                <option value="socks5">SOCKS5</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input type="checkbox" name="is_active" value="true">
+                Активен
+            </label>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn-primary">Сохранить</button>
+        </div>
+    </form>
+</div>
+
+
+<!-- ТАБЛИЦА ПРОКСИ -->
+<div class="card">
+    <h2 class="card-title">Текущие прокси</h2>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Label</th>
+                <th>Host</th>
+                <th>HTTP</th>
+                <th>SOCKS5</th>
+                <th>Протокол</th>
+                <th>Активен</th>
+                <th>Успех / Ошибки</th>
+                <th class="actions-col">Действия</th>
+            </tr>
+        </thead>
+
+        <tbody>
+            {% for p in proxies %}
+            <tr>
+                <td>{{ p.id }}</td>
+                <td>{{ p.label }}</td>
+                <td>{{ p.host }}</td>
+                <td>{{ p.port_http }}</td>
+                <td>{{ p.port_socks5 }}</td>
+                <td>{{ p.protocol }}</td>
+
+                <td>
+                    {% if p.is_active %}
+                        <span class="badge badge-green">Да</span>
+                    {% else %}
+                        <span class="badge badge-gray">Нет</span>
+                    {% endif %}
+                </td>
+
+                <td>{{ p.success_count }}/{{ p.fail_count }}</td>
+
+                <td class="actions-col">
+                    <form method="post"
+                          action="/admin/proxies/{{ p.id }}/toggle"
+                          class="inline-form">
+                        <button class="btn-small">
+                            {% if p.is_active %}Выключить{% else %}Включить{% endif %}
+                        </button>
+                    </form>
+
+                    <form method="post"
+                          action="/admin/proxies/{{ p.id }}/delete"
+                          class="inline-form">
+                        <button class="btn-small btn-danger">Удалить</button>
+                    </form>
+                </td>
+
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% endblock %}

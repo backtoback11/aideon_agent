@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% set active_page = "settings" %}
+
+{% block title %}Настройки капча-сервисов — Aideon Agent{% endblock %}
+
+{% block content %}
+<h1 class="main-title">API ключи капча-сервисов</h1>
+
+<div class="card">
+    <h2 class="card-title">Ключи RuCaptcha / 2Captcha / Capsolver</h2>
+
+    <form method="post" action="/admin/settings" class="form-grid">
+        <div class="form-group">
+            <label for="rucaptcha_key">RuCaptcha KEY</label>
+            <input
+                id="rucaptcha_key"
+                type="text"
+                name="rucaptcha_key"
+                value="{{ settings.RUCAPTCHA_KEY or '' }}"
+                placeholder="ВАШ_RUCAPTCHA_KEY"
+            >
+        </div>
+
+        <div class="form-group">
+            <label for="twocaptcha_key">2Captcha KEY</label>
+            <input
+                id="twocaptcha_key"
+                type="text"
+                name="twocaptcha_key"
+                value="{{ settings.TWOCAPTCHA_KEY or '' }}"
+                placeholder="ВАШ_2CAPTCHA_KEY"
+            >
+        </div>
+
+        <div class="form-group">
+            <label for="capsolver_key">Capsolver KEY</label>
+            <input
+                id="capsolver_key"
+                type="text"
+                name="capsolver_key"
+                value="{{ settings.CAPSOLVER_KEY or '' }}"
+                placeholder="ВАШ_CAPSOLVER_KEY"
+            >
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn-primary">Сохранить</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

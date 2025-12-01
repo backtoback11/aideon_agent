@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+{% set active_page = "invoices_create" %}
+
+{% block title %}Создать инвойс — Aideon Agent{% endblock %}
+
+{% block content %}
+<style>
+    body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0f172a;
+        color: #e5e7eb;
+        margin: 0;
+        padding: 0;
+    }
+    .layout {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+    }
+    h1 {
+        font-size: 24px;
+        margin-bottom: 16px;
+    }
+    .card {
+        background: #020617;
+        border-radius: 12px;
+        padding: 20px;
+        border: 1px solid #1e293b;
+        box-shadow: 0 10px 30px rgba(15,23,42,0.6);
+    }
+    .section-title {
+        font-size: 16px;
+        margin: 20px 0 8px;
+        padding-bottom: 4px;
+        border-bottom: 1px solid #1f2933;
+        color: #f9fafb;
+    }
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 12px 20px;
+    }
+    label {
+        display: block;
+        font-size: 13px;
+        margin-bottom: 4px;
+        color: #cbd5f5;
+    }
+    .required::after {
+        content: " *";
+        color: #f97373;
+    }
+    input[type="text"],
+    input[type="number"],
+    input[type="tel"],
+    input[type="date"],
+    select,
+    textarea {
+        width: 100%;
+        padding: 7px 9px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #020617;
+        color: #e5e7eb;
+        font-size: 14px;
+        box-sizing: border-box;
+    }
+    textarea {
+        min-height: 60px;
+        resize: vertical;
+    }
+    input:focus,
+    select:focus,
+    textarea:focus {
+        outline: none;
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 1px rgba(56,189,248,0.4);
+    }
+    .actions {
+        margin-top: 24px;
+        display: flex;
+        gap: 12px;
+        justify-content: flex-end;
+    }
+    .btn {
+        padding: 9px 16px;
+        border-radius: 999px;
+        border: none;
+        font-size: 14px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none;
+    }
+    .btn-primary {
+        background: linear-gradient(135deg, #22c55e, #0ea5e9);
+        color: #0b1120;
+        font-weight: 600;
+    }
+    .btn-secondary {
+        background: #020617;
+        color: #e5e7eb;
+        border: 1px solid #334155;
+    }
+    a {
+        color: #38bdf8;
+        text-decoration: none;
+    }
+    a:hover {
+        text-decoration: underline;
+    }
+    .hint {
+        font-size: 11px;
+        color: #64748b;
+        margin-top: 2px;
+    }
+</style>
+
+<div class="layout">
+    <h1>Создать инвойс</h1>
+
+    <p style="margin-bottom: 16px; font-size:13px; color:#9ca3af;">
+        Временный шаблон для прогонки воркера: заполняем все ключевые поля, воркер берёт их из БД и оформляет перевод.
+    </p>
+
+    <div class="card">
+        <form method="post" action="{{ request.url_for('invoices_create') }}">
+            <!-- ========== БЛОК: ОБЩЕЕ ПО ИНВОЙСУ ========== -->
+            <div class="section-title">Общие параметры инвойса</div>
+            <div class="grid">
+                <div>
+                    <label for="invoice_id" class="required">Invoice ID (внешний ID из платёжной системы)</label>
+                    <input type="text" id="invoice_id" name="invoice_id" required>
+                </div>
+
+                <div>
+                    <label for="amount" class="required">Сумма</label>
+                    <input type="number" id="amount" name="amount" step="0.01" min="0" required>
+                </div>
+
+                <div>
+                    <label for="currency" class="required">Валюта</label>
+                    <select id="currency" name="currency" required>
+                        <option value="RUB" selected>RUB</option>
+                        <option value="USD">USD</option>
+                        <option value="EUR">EUR</option>
+                        <option value="UZS">UZS</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label for="callback_url">Callback URL (опционально)</label>
+                    <input type="text" id="callback_url" name="callback_url" placeholder="https://example.com/callback">
+                    <div class="hint">Сюда позже будет отправляться диплинк / статус.</div>
+                </div>
+            </div>
+
+            <!-- ========== БЛОК: ПОЛУЧАТЕЛЬ ========== -->
+            <div class="section-title">Получатель перевода</div>
+            <div class="grid">
+                <div>
+                    <label for="recipient_country" class="required">Страна получателя</label>
+                    <input type="text" id="recipient_country" name="recipient_country" value="uzbekistan" required>
+                    <div class="hint">Сейчас используется в URL как /transfer/uzbekistan.</div>
+                </div>
+
+                <div>
+                    <label for="recipient_bank" class="required">Банк получателя</label>
+                    <input type="text" id="recipient_bank" name="recipient_bank" required>
+                    <div class="hint">Должно совпадать с тем, что выбирается на Multitransfer.</div>
+                </div>
+
+                <div>
+                    <label for="recipient_first_name" class="required">Имя получателя</label>
+                    <input type="text" id="recipient_first_name" name="recipient_first_name" value="Islom" required>
+                </div>
+
+                <div>
+                    <label for="recipient_last_name" class="required">Фамилия получателя</label>
+                    <input type="text" id="recipient_last_name" name="recipient_last_name" value="Xujanazarov" required>
+                </div>
+
+                <div>
+                    <label for="recipient_card_number" class="required">Номер карты получателя</label>
+                    <input type="text" id="recipient_card_number" name="recipient_card_number" value="9860046602662507" required>
+                    <div class="hint">Полный номер карты, как в текущем тестовом шаблоне.</div>
+                </div>
+
+                <div>
+                    <label for="recipient_requisites">Доп. реквизиты (если нужно)</label>
+                    <textarea id="recipient_requisites" name="recipient_requisites"
+                              placeholder="Если нужны комментарии или доп. данные по карте/банку."></textarea>
+                </div>
+            </div>
+
+            <!-- ========== БЛОК: ОТПРАВИТЕЛЬ (ПАСПОРТНЫЕ ДАННЫЕ) ========== -->
+            <div class="section-title">Отправитель (паспортные данные)</div>
+            <div class="grid">
+                <div>
+                    <label for="sender_first_name" class="required">Имя отправителя</label>
+                    <input type="text" id="sender_first_name" name="sender_first_name" value="Николай" required>
+                </div>
+
+                <div>
+                    <label for="sender_last_name" class="required">Фамилия отправителя</label>
+                    <input type="text" id="sender_last_name" name="sender_last_name" value="Никифоров" required>
+                </div>
+
+                <div>
+                    <label for="sender_middle_name">Отчество (необязательно)</label>
+                    <input type="text" id="sender_middle_name" name="sender_middle_name">
+                </div>
+
+                <div>
+                    <label for="sender_birth_date" class="required">Дата рождения</label>
+                    <input type="date" id="sender_birth_date" name="sender_birth_date" value="2007-08-01" required>
+                </div>
+
+                <div>
+                    <label for="sender_phone" class="required">Телефон отправителя</label>
+                    <input type="tel" id="sender_phone" name="sender_phone" value="+7 987 279-71-49" required>
+                </div>
+
+                <div>
+                    <label for="sender_passport_type" class="required">Тип паспорта</label>
+                    <select id="sender_passport_type" name="sender_passport_type" required>
+                        <option value="rf_national" selected>Паспорт РФ (национальный)</option>
+                        <option value="rf_zagran">Паспорт РФ (загран)</option>
+                        <option value="other">Другой документ</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label for="sender_passport_series" class="required">Серия паспорта</label>
+                    <input type="text" id="sender_passport_series" name="sender_passport_series" value="8996" required>
+                </div>
+
+                <div>
+                    <label for="sender_passport_number" class="required">Номер паспорта</label>
+                    <input type="text" id="sender_passport_number" name="sender_passport_number" value="340019" required>
+                </div>
+
+                <div>
+                    <label for="sender_passport_country" class="required">Страна выдачи документа</label>
+                    <input type="text" id="sender_passport_country" name="sender_passport_country" value="Россия" required>
+                </div>
+
+                <div>
+                    <label for="sender_passport_issue_date" class="required">Дата выдачи паспорта</label>
+                    <input type="date" id="sender_passport_issue_date" name="sender_passport_issue_date" value="2021-08-26" required>
+                </div>
+
+                <div>
+                    <label for="sender_birth_country" class="required">Страна рождения</label>
+                    <input type="text" id="sender_birth_country" name="sender_birth_country" value="Россия" required>
+                </div>
+
+                <div>
+                    <label for="sender_birth_place" class="required">Место рождения</label>
+                    <input type="text" id="sender_birth_place" name="sender_birth_place" value="Камышин" required>
+                </div>
+
+                <div>
+                    <label for="sender_registration_country" class="required">Страна регистрации</label>
+                    <input type="text" id="sender_registration_country" name="sender_registration_country" value="Россия" required>
+                </div>
+
+                <div>
+                    <label for="sender_registration_place" class="required">Место регистрации</label>
+                    <input type="text" id="sender_registration_place" name="sender_registration_place" value="Камышин" required>
+                </div>
+            </div>
+
+            <div class="actions">
+                <a href="{{ request.url_for('invoices_list') }}" class="btn btn-secondary">Отмена</a>
+                <button type="submit" class="btn btn-primary">Создать инвойс</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% set active_page = "dashboard" %}
+
+{% block title %}Dashboard — Aideon Agent{% endblock %}
+
+{% block content %}
+<h1 class="main-title">Дашборд</h1>
+
+<!-- Быстрые действия -->
+<div class="actions-row">
+    <a href="{{ request.url_for('invoices_create_form') }}" class="btn-primary">
+        + Создать инвойс
+    </a>
+    <a href="{{ request.url_for('invoices_list') }}" class="btn-secondary">
+        Список инвойсов
+    </a>
+    <a href="{{ request.url_for('list_proxies') }}" class="btn-secondary">
+        Прокси
+    </a>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-label">Всего инвойсов</div>
+        <div class="stat-value">{{ total }}</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-label">В очереди (queued)</div>
+        <div class="stat-value">{{ queued }}</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-label">Обрабатывается (processing)</div>
+        <div class="stat-value">{{ processing }}</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-label">Ждут капчу (waiting_captcha)</div>
+        <div class="stat-value">{{ waiting }}</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-label">Ошибки (error)</div>
+        <div class="stat-value">{{ error }}</div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-label">Активные прокси (записей)</div>
+        <div class="stat-value">{{ proxies }}</div>
+    </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+debug/
+*.log
+.idea/
+.vscode/
+/playwright-report/
+/playwright/.cache/

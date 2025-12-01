@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+
+    <!-- Заголовок, можно переопределять в дочерних шаблонах -->
+    <title>{% block title %}Aideon Admin{% endblock %}</title>
+
+    <!-- Подключение глобальных стилей -->
+    <link rel="stylesheet" href="/static/admin_panel.css">
+</head>
+
+<body>
+
+<div class="app-shell">
+    <!-- Сайдбар -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-logo"></div>
+
+            <div>
+                <div class="sidebar-title">Aideon Agent</div>
+                <div class="sidebar-subtitle">Automation Dashboard</div>
+            </div>
+        </div>
+
+        <div class="sidebar-section-label">Навигация</div>
+        <ul class="nav-list">
+            <!-- Дашборд -->
+            <li class="nav-item {% if active_page == 'dashboard' %}active{% endif %}">
+                <a href="{{ request.url_for('admin_dashboard') }}" style="all: unset; cursor: pointer;">
+                    <span class="nav-item-icon"></span>
+                    <span>Dashboard</span>
+                </a>
+            </li>
+
+            <!-- Инвойсы: список -->
+            <li class="nav-item {% if active_page in ['invoices', 'invoices_create'] %}active{% endif %}">
+                <a href="{{ request.url_for('invoices_list') }}" style="all: unset; cursor: pointer;">
+                    <span class="nav-item-icon"></span>
+                    <span>Инвойсы</span>
+                </a>
+            </li>
+
+            <!-- Инвойсы: создание -->
+            <li class="nav-item {% if active_page == 'invoices_create' %}active{% endif %}">
+                <a href="{{ request.url_for('invoices_create_form') }}" style="all: unset; cursor: pointer;">
+                    <span class="nav-item-icon"></span>
+                    <span>Создать инвойс</span>
+                </a>
+            </li>
+
+            <!-- Прокси -->
+            <li class="nav-item {% if active_page == 'proxies' %}active{% endif %}">
+                <a href="{{ request.url_for('list_proxies') }}" style="all: unset; cursor: pointer;">
+                    <span class="nav-item-icon"></span>
+                    <span>Прокси</span>
+                </a>
+            </li>
+
+            <!-- Настройки -->
+            <li class="nav-item {% if active_page == 'settings' %}active{% endif %}">
+                <a href="{{ request.url_for('settings_page') }}" style="all: unset; cursor: pointer;">
+                    <span class="nav-item-icon"></span>
+                    <span>Настройки</span>
+                </a>
+            </li>
+        </ul>
+
+        <!-- статус агента -->
+        <div class="sidebar-footer">
+            {% set status = session_status if session_status is defined and session_status else 'unknown' %}
+
+            {% if status == 'ready' %}
+                <div class="agent-status-pill online">
+                    <div class="agent-dot"></div>
+                    <span>Agent Online</span>
+                </div>
+            {% elif status in ['starting', 'login_required', 'waiting_captcha'] %}
+                <div class="agent-status-pill warning">
+                    <div class="agent-dot"></div>
+                    <span>Agent: требуется действие</span>
+                </div>
+            {% elif status == 'error' %}
+                <div class="agent-status-pill offline">
+                    <div class="agent-dot"></div>
+                    <span>Agent: ошибка</span>
+                </div>
+            {% else %}
+                <div class="agent-status-pill">
+                    <div class="agent-dot"></div>
+                    <span>Agent status: Unknown</span>
+                </div>
+            {% endif %}
+        </div>
+    </aside>
+
+    <!-- Основной контент -->
+    <main class="main">
+        {% block content %}
+        {% endblock %}
+    </main>
+</div>
+
+</body>
+</html>
