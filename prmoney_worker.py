@@ -3,93 +3,117 @@ from __future__ import annotations
 
 import asyncio
 
-from playwright.async_api import Browser
-
 from processed_store import ProcessedStore
 from prmoney_fetcher import fetch_pending_invoices
 from prmoney_invoice import PrmoneyInvoice
 
-# Когда будем подключать реальный мульти-трансфер — раскомментируем:
-# from multitransfer_step1 import step1_fill_amount_and_open_methods
-# from multitransfer_step2 import step2_fill_recipient
-# from multitransfer_step3 import step3_confirm_and_go
-# from multitransfer_step4 import step4_wait_for_deeplink
 
+# ============================================================
+# 1) Обработчик НОВОГО инвойса (здесь только наша БД / админка)
+# ============================================================
 
-async def process_invoice(browser: Browser, inv: PrmoneyInvoice, store: ProcessedStore) -> None:
+async def handle_new_invoice(inv: PrmoneyInvoice) -> None:
     """
-    Обработка ОДНОГО инвойса PrMoney.
+    Здесь мы НИЧЕГО не знаем про Multitransfer и браузер.
 
-    Здесь место для интеграции с твоим Multitransfer-потоком:
-      1) открыть страницу multitransfer,
-      2) step1: выставить сумму,
-      3) step2: заполнить получателя (holder + card_number),
-      4) step3: согласие/кнопки,
-      5) step4: дождаться диплинка (Vision) и он сам улетит вебхуком.
+    Задача только одна:
+      - записать инвойс из PrMoney в нашу систему (БД),
+      - чтобы он появился в разделе «Инвойсы» в админке
+        и ждал, пока Aideon Agent его заберёт.
+
+    Примерная логика (псевдокод):
+
+        from models import Invoice
+        Invoice.create(
+            external_id=inv.id,
+            provider="prmoney",
+            client_id=inv.client_id,
+            amount=inv.amount,
+            card_number=inv.card_number,
+            holder=inv.holder,
+            status="waiting_agent",  # наш внутренний статус
+        )
+
+    Сейчас оставляю как заглушку с print — ты подставишь реальную запись в БД.
     """
     print(
-        f"\n[WORKER] → Начинаем обработку external_id={inv.id}, "
+        f"[PRMONEY_HANDLER] Новый инвойс: external_id={inv.id}, "
+        f"amount={inv.amount}, card={inv.card_number}, holder={inv.holder}"
+    )
+    # TODO: заменить на реальную вставку в БД (раздел «Инвойсы»).
+
+
+# ============================================================
+# 2) Обработка одного инвойса: только учёт и вызов handler'a
+# ============================================================
+
+async def _process_single_invoice(
+    inv: PrmoneyInvoice,
+    store: ProcessedStore,
+) -> None:
+    """
+    Локальная задача для одного инвойса:
+      - помечаем как "в обработке", чтобы не взять повторно,
+      - вызываем handle_new_invoice (запись в БД),
+      - по результату отмечаем done/failed в ProcessedStore.
+
+    НИКАКОГО браузера, капчи или QR здесь нет.
+    """
+    print(
+        f"\n[PRMONEY_WORKER] → Обработка external_id={inv.id}, "
         f"amount={inv.amount}, card={inv.card_number}, holder={inv.holder}"
     )
 
-    # отмечаем, что инвойс в обработке — чтобы не взять повторно
+    # отмечаем, что этот инвойс мы уже взяли
     store.mark_processing(inv.id)
 
-    # Открываем отдельную вкладку под этот инвойс
-    page = await browser.new_page()
-
     try:
-        # TODO: здесь подключаем твой существующий сценарий multitransfer.
-        # Ниже пример скелета — по факту ты подставишь свои URL и шаги.
-
-        # await page.goto("https://multitransfer.ru/transfer/uzbekistan", wait_until="load")
-        # await step1_fill_amount_and_open_methods(page, inv.amount)
-        # await step2_fill_recipient(page, full_name=inv.holder, card_number=inv.card_number)
-        # await step3_confirm_and_go(page)
-        # deeplink = await step4_wait_for_deeplink(page, inv)
-
-        # Временный мок, чтобы не ломать существующий агент:
-        print(f"[WORKER] (mock) Обрабатываю invoice={inv.id}, пока без реального multitransfer-потока.")
-        deeplink = None  # сюда позже придёт реальный диплинк
-
-        # Если дошли сюда без исключений — считаем инвойс успешно обработанным
+        await handle_new_invoice(inv)
         store.mark_done(inv.id)
-        print(f"[WORKER] ✔ invoice={inv.id} отмечен как обработанный (external_id={inv.id}).")
-
+        print(f"[PRMONEY_WORKER] ✔ external_id={inv.id} отмечен как обработанный (saved to DB).")
     except Exception as e:
-        print(f"[WORKER] ❌ Ошибка обработки invoice={inv.id}: {e}")
+        print(f"[PRMONEY_WORKER] ❌ Ошибка обработки external_id={inv.id}: {e}")
         store.mark_failed(inv.id)
-    finally:
-        # Закрываем вкладку
-        try:
-            await page.close()
-        except Exception:
-            pass
 
 
-async def prmoney_loop(browser: Browser, poll_interval_sec: int = 3) -> None:
+# ============================================================
+# 3) Основной цикл воркера PrMoney
+# ============================================================
+
+async def prmoney_loop(poll_interval_sec: int = 3) -> None:
     """
-    Основной цикл воркера:
-      - каждые poll_interval_sec секунд тянем список инвойсов из PrMoney,
-      - берём только новые (ещё не processed и не в processing),
-      - для каждого нового инвойса создаём отдельную async-задачу.
+    Основной цикл воркера PrMoney.
 
-    Обработка инвойсов идёт параллельно, но без повторов.
+    Делает следующее:
+      - каждые poll_interval_sec секунд запрашивает список инвойсов у PrMoney (fetch_pending_invoices),
+      - фильтрует только НОВЫЕ (через ProcessedStore),
+      - для каждого нового инвойса создаёт отдельную async-задачу
+        _process_single_invoice(...).
+
+    ВАЖНО:
+      - никакого Multitransfer и Playwright внутри этого файла;
+      - этот воркер — только "мост" между PrMoney и нашей БД.
     """
     store = ProcessedStore()
 
+    print("[PRMONEY_WORKER] Старт цикла опроса PrMoney...")
+
     while True:
-        print("\n[WORKER] === ЗАПРОС К PRMONEY /test1 ===")
-        invoices = fetch_pending_invoices()
+        print("\n[PRMONEY_WORKER] === Запрос к PrMoney /test1 ===")
+        try:
+            invoices = fetch_pending_invoices()
+        except Exception as e:
+            print(f"[PRMONEY_WORKER] ❌ Ошибка при fetch_pending_invoices: {e}")
+            invoices = []
 
         for inv in invoices:
-            # фильтр старых/дублей
+            # фильтр старых/дубликатов
             if not store.is_new(inv.id):
                 continue
 
-            print(f"[WORKER] Найден новый инвойс external_id={inv.id}, ставим в очередь обработки.")
-            # отдельная задача под каждый инвойс
-            asyncio.create_task(process_invoice(browser, inv, store))
+            print(f"[PRMONEY_WORKER] Новый инвойс external_id={inv.id} → ставим в обработку.")
+            # отдельная async-задача для каждого инвойса
+            asyncio.create_task(_process_single_invoice(inv, store))
 
         # пауза до следующего опроса
         await asyncio.sleep(poll_interval_sec)
