@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% set active_page = "invoices" %}
+
+{% block title %}Инвойсы — Aideon Agent{% endblock %}
+
+{% block content %}
+<h1 class="main-title">Инвойсы</h1>
+
+<div class="actions-row">
+    <a href="{{ request.url_for('invoices_create_form') }}" class="btn-primary">
+        + Создать инвойс
+    </a>
+</div>
+
+{% if invoices|length == 0 %}
+    <p>Пока нет инвойсов.</p>
+{% else %}
+    <div class="table-wrapper">
+        <table class="table">
+            <thead>
+            <tr>
+                <th>ID</th>
+                <th>Invoice ID</th>
+                <th>Сумма</th>
+                <th>Валюта</th>
+                <th>Статус</th>
+                <th>Получатель</th>
+                <th>Карта</th>
+                <th>Deeplink</th>
+                <th>Ошибка</th>
+                <th>Создан</th>
+                <th>Обновлён</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for inv in invoices %}
+                <tr>
+                    <td>{{ inv.id }}</td>
+                    <td>{{ inv.invoice_id }}</td>
+                    <td>{{ "%.2f"|format(inv.amount) }}</td>
+                    <td>{{ inv.currency }}</td>
+
+                    <td>
+                        {% if inv.status == 'queued' %}
+                            <span class="badge badge-queued">queued</span>
+                        {% elif inv.status == 'processing' %}
+                            <span class="badge badge-processing">processing</span>
+                        {% elif inv.status == 'waiting_captcha' %}
+                            <span class="badge badge-waiting">waiting_captcha</span>
+                        {% elif inv.status == 'error' %}
+                            <span class="badge badge-error">error</span>
+                        {% else %}
+                            <span class="badge">{{ inv.status }}</span>
+                        {% endif %}
+                    </td>
+
+                    <td>{{ inv.recipient_name }}</td>
+                    <td>{{ inv.recipient_card_number }}</td>
+
+                    <td class="mono">
+                        {% if inv.deeplink %}
+                            <a href="{{ inv.deeplink }}" target="_blank">
+                                {{ inv.deeplink[:40] }}{% if inv.deeplink|length > 40 %}…{% endif %}
+                            </a>
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+
+                    <td class="mono">
+                        {% if inv.error_message %}
+                            <span title="{{ inv.error_message }}">
+                                {{ inv.error_message[:30] }}{% if inv.error_message|length > 30 %}…{% endif %}
+                            </span>
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+
+                    <td>{{ inv.created_at }}</td>
+                    <td>{{ inv.updated_at }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% endif %}
+
+{% endblock %}

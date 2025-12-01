@@ -37,10 +37,25 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 CAPTCHA_KEYS = ["RUCAPTCHA_KEY", "TWOCAPTCHA_KEY", "CAPSOLVER_KEY"]
 SESSION_KEYS = ["SESSION_STATUS", "SESSION_MESSAGE", "SESSION_UPDATED_AT"]
 
+# Флаги воркеров
+WORKER_AGENT_KEY = "AGENT_WORKER_ENABLED"
+WORKER_PRMONEY_KEY = "PRMONEY_WORKER_ENABLED"
+
 
 def _db_get_setting(db, key: str) -> str:
     s = db.query(Setting).filter(Setting.key == key).first()
     return s.value if s else ""
+
+
+def _db_set_setting(db, key: str, value: str) -> None:
+    """Универсальная запись / создание настройки."""
+    row = db.query(Setting).filter(Setting.key == key).first()
+    if not row:
+        row = Setting(key=key, value=value)
+        db.add(row)
+    else:
+        row.value = value
+    db.commit()
 
 
 # -------------------------------------------------------------
@@ -71,6 +86,10 @@ def admin_dashboard(request: Request):
         session_message = _db_get_setting(db, "SESSION_MESSAGE") or ""
         session_updated_at = _db_get_setting(db, "SESSION_UPDATED_AT") or ""
 
+        # флаги воркеров (1 / 0)
+        agent_worker_enabled = (_db_get_setting(db, WORKER_AGENT_KEY) == "1")
+        prmoney_worker_enabled = (_db_get_setting(db, WORKER_PRMONEY_KEY) == "1")
+
         return templates.TemplateResponse(
             "admin/dashboard.html",
             {
@@ -85,6 +104,9 @@ def admin_dashboard(request: Request):
                 "session_status": session_status,
                 "session_message": session_message,
                 "session_updated_at": session_updated_at,
+                # новые поля для управления воркерами
+                "agent_worker_enabled": agent_worker_enabled,
+                "prmoney_worker_enabled": prmoney_worker_enabled,
             },
         )
     finally:
@@ -368,5 +390,40 @@ def save_settings(
         db.commit()
 
         return RedirectResponse("/admin/settings", status_code=HTTP_302_FOUND)
+    finally:
+        db.close()
+
+
+# -------------------------------------------------------------
+# УПРАВЛЕНИЕ ВОРКЕРАМИ (AGENT / PRMONEY)
+# -------------------------------------------------------------
+@app.post("/admin/workers/toggle_agent", name="toggle_agent_worker")
+def toggle_agent_worker():
+    """
+    Включение/выключение основного агента.
+    workers.py должен сам смотреть на флаг AGENT_WORKER_ENABLED.
+    """
+    db = SessionLocal()
+    try:
+        cur = _db_get_setting(db, WORKER_AGENT_KEY)
+        new_val = "0" if cur == "1" else "1"
+        _db_set_setting(db, WORKER_AGENT_KEY, new_val)
+        return RedirectResponse("/admin", status_code=HTTP_302_FOUND)
+    finally:
+        db.close()
+
+
+@app.post("/admin/workers/toggle_prmoney", name="toggle_prmoney_worker")
+def toggle_prmoney_worker():
+    """
+    Включение/выключение PrMoney-воркера.
+    workers.py должен сам смотреть на флаг PRMONEY_WORKER_ENABLED.
+    """
+    db = SessionLocal()
+    try:
+        cur = _db_get_setting(db, WORKER_PRMONEY_KEY)
+        new_val = "0" if cur == "1" else "1"
+        _db_set_setting(db, WORKER_PRMONEY_KEY, new_val)
+        return RedirectResponse("/admin", status_code=HTTP_302_FOUND)
     finally:
         db.close()

@@ -35,7 +35,7 @@
             </li>
 
             <!-- Инвойсы: список -->
-            <li class="nav-item {% if active_page in ['invoices', 'invoices_create'] %}active{% endif %}">
+            <li class="nav-item {% if active_page in ['invoices', 'invoices_list', 'invoices_create'] %}active{% endif %}">
                 <a href="{{ request.url_for('invoices_list') }}" style="all: unset; cursor: pointer;">
                     <span class="nav-item-icon"></span>
                     <span>Инвойсы</span>
@@ -43,8 +43,8 @@
             </li>
 
             <!-- Инвойсы: создание -->
-            <li class="nav-item {% if active_page == 'invoices_create' %}active{% endif %}">
-                <a href="{{ request.url_for('invoices_create_form') }}" style="all: unset; cursor: pointer;">
+            <li class="nav-item {% if active_page in ['invoices_create'] %}active{% endif %}">
+                <a href "{{ request.url_for('invoices_create_form') }}" style="all: unset; cursor: pointer;">
                     <span class="nav-item-icon"></span>
                     <span>Создать инвойс</span>
                 </a>
