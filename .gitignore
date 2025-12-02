@@ -8,3 +8,4 @@ debug/
 /playwright-report/
 /playwright/.cache/
 .env
+vision_qr.py
