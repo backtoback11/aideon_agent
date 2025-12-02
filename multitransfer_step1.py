@@ -52,9 +52,29 @@ async def step1_fill_amount_and_open_methods(page: Page, amount: float) -> None:
         except PlaywrightTimeoutError:
             raise RuntimeError("[STEP1] Не удалось найти поле для суммы")
 
+    # --- ЭМИТАЦИЯ РУЧНОГО ВВОДА СУММЫ (БЕЗ TAB/ENTER) ---
     await amount_input.click()
-    await amount_input.fill(str(amount))
-    print(f"[STEP1] Сумма заполнена: {amount}")
+    await page.wait_for_timeout(200)  # маленькая пауза как у человека
+
+    # очищаем поле (на всякий случай)
+    try:
+        await amount_input.fill("")
+    except Exception:
+        pass
+
+    # приводим сумму к тому виду, как человек бы набивал (без '.0' при целых)
+    try:
+        if int(amount) == amount:
+            text_amount = str(int(amount))
+        else:
+            text_amount = str(amount)
+    except Exception:
+        text_amount = str(amount)
+
+    print(f"[STEP1] Ручной (type) ввод суммы: {text_amount!r}")
+    await amount_input.type(text_amount, delay=150)  # медленный набор цифр
+
+    print(f"[STEP1] Сумма заполнена: {text_amount}")
 
     # ждём пересчёта, чтобы форма «приняла» сумму и добавила строку с курсом
     await page.wait_for_timeout(5000)

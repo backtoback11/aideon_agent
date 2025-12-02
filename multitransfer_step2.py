@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-import os
+import os  # можно уже не нужен, но оставляем, чтобы ничего не ломать
 from datetime import datetime
 from typing import Optional, List
+from pathlib import Path
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from agent_config import NAVIGATION_TIMEOUT_MS
 
-# Папка для дампов второго шага
-DEBUG_DIR = "debug/multitransfer_step2"
+# Папка для дампов второго шага (в том же стиле, что и step1/step4)
+DEBUG_DIR = Path("debug") / "multitransfer_step2"
 
 
 def _ensure_debug_dir() -> None:
     """Гарантируем, что папка для дампов существует."""
     try:
-        os.makedirs(DEBUG_DIR, exist_ok=True)
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         print(f"[STEP2-DEBUG] Не удалось создать папку {DEBUG_DIR}: {e}")
 
@@ -27,7 +28,7 @@ async def _save_step2_html(page: Page, label: str) -> None:
     """
     _ensure_debug_dir()
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    html_path = os.path.join(DEBUG_DIR, f"{label}_step2_{ts}.html")
+    html_path = DEBUG_DIR / f"{label}_step2_{ts}.html"
 
     try:
         html = await page.content()
@@ -36,6 +37,31 @@ async def _save_step2_html(page: Page, label: str) -> None:
         print(f"[STEP2-DEBUG] HTML страницы сохранён в {html_path}")
     except Exception as e:
         print(f"[STEP2-DEBUG] Не удалось сохранить HTML: {e}")
+
+
+async def _debug_offers_state(page: Page) -> None:
+    """
+    Дополнительная диагностика, когда банк не найден:
+      - считаем количество кнопок 'Выбрать'
+      - ищем в HTML текст про отсутствие доступных способов
+    Это НЕ меняет логику, только даёт больше данных в логах.
+    """
+    try:
+        offers_count = await page.locator("button:has-text('Выбрать')").count()
+        print(f"[STEP2-DEBUG] Найдено кнопок 'Выбрать': {offers_count}")
+    except Exception as e:
+        print(f"[STEP2-DEBUG] Не удалось посчитать кнопки 'Выбрать': {e}")
+
+    try:
+        html = await page.content()
+        low = html.lower()
+        if "нет доступ" in low or "no available" in low:
+            print(
+                "[STEP2-DEBUG] На странице есть текст про отсутствие доступных "
+                "способов/офферов (возможно, сумма недоступна для перевода)."
+            )
+    except Exception as e:
+        print(f"[STEP2-DEBUG] Не удалось проанализировать HTML на предмет 'нет доступных': {e}")
 
 
 async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
@@ -50,6 +76,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
     bank_name = (bank_name or "").strip()
     print(f"[STEP2] → Выбор банка/оффера (bank={bank_name!r})")
 
+    # даём странице чуть времени, чтобы подгрузились офферы
     await page.wait_for_timeout(2000)
     await _save_step2_html(page, label="before_select")
 
@@ -58,6 +85,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
             "[STEP2] BANK_NOT_SPECIFIED: В инвойсе не указан банк (recipient_bank пустой)"
         )
 
+    # варианты поиска: полное имя + отдельные части длиной >= 3
     search_variants: List[str] = [bank_name]
     parts = bank_name.split()
     for p in parts:
@@ -89,14 +117,17 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
 
                 container = candidate
 
+                # 1) ближайшая кнопка
                 btn = candidate.locator("xpath=ancestor-or-self::button[1]")
                 if await btn.count() > 0:
                     container = btn.first
                 else:
+                    # 2) что-то с role='button'
                     btn_role = candidate.locator("xpath=ancestor-or-self::*[@role='button'][1]")
                     if await btn_role.count() > 0:
                         container = btn_role.first
                     else:
+                        # 3) общий fallback – li/div/a
                         fallback = candidate.locator(
                             "xpath=ancestor-or-self::*[self::li or self::div or self::a][1]"
                         )
@@ -122,6 +153,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
     if not clicked:
         print(f"[STEP2] ❌ BANK_NOT_FOUND: {bank_name!r}")
         await _save_step2_html(page, label="bank_not_found")
+        await _debug_offers_state(page)  # доп. диагностика, логика не меняется
         raise RuntimeError(
             f"[STEP2] BANK_NOT_FOUND: Банк {bank_name!r} не найден среди вариантов. "
             "Требуется заменить реквизиты получателя."
@@ -131,7 +163,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
     print("[STEP2] Клик по банку выполнен, ищу кнопку 'Продолжить'…")
 
     try:
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
         await _save_step2_html(page, label="before_continue")
 
         continue_btn = page.get_by_role("button", name="Продолжить").first

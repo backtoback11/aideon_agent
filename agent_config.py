@@ -51,7 +51,7 @@ DEFAULT_USER_AGENT = (
 # CONCURRENCY (параллельные агенты)
 # ----------------------
 # сколько инвойсов одновременно обрабатываем в agent.py
-MAX_CONCURRENT_INVOICES: int = 20
+MAX_CONCURRENT_INVOICES: int = 10
 
 
 # ----------------------

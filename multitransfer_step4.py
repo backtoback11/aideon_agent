@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import os
-import sys
 import time
 from datetime import datetime
 from typing import Optional
+import re
+import asyncio
 
 import requests
 from playwright.async_api import Page
-import importlib.util
 
 from db import SessionLocal
 from models import Invoice as InvoiceModel
@@ -19,42 +19,15 @@ WEBHOOK_URL = "https://joker-pay.com/webhook/tips"
 FINAL_SCREEN_MAX_WAIT_SECONDS = 300   # 5 минут на капчу и переход к финалу
 QR_APPEAR_DELAY_MS = 2000             # задержка, чтобы QR точно дорисовался
 
+# Ключевые маркеры диплинков, которые нас интересуют
+DEEP_LINK_KEYWORDS = [
+    "qr.nspk.ru",
+    "SBPQR://",
+    "sbpqr://",
+    "mcash://",
+]
 
-# ============================================================
-# ЗАГРУЗКА vision_qr (устойчиво к любому способу запуска)
-# ============================================================
-
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-VISION_PATH = os.path.join(CURRENT_DIR, "vision_qr.py")
-
-# пробуем обычный импорт, если модуль уже в sys.path
-try:
-    from vision_qr import extract_qr_deeplink_from_screenshot  # type: ignore
-    print("[STEP4] vision_qr импортирован как обычный модуль.")
-except ImportError:
-    print("[STEP4] Обычный импорт vision_qr не удался, пробую загрузить по пути:", VISION_PATH)
-
-    if not os.path.exists(VISION_PATH):
-        raise RuntimeError(
-            f"[STEP4] Не найден vision_qr.py по пути: {VISION_PATH}. "
-            f"Положи vision_qr.py рядом с multitransfer_step4.py."
-        )
-
-    spec = importlib.util.spec_from_file_location("vision_qr", VISION_PATH)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("[STEP4] Не удалось создать spec для vision_qr.py")
-
-    vision_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(vision_module)  # type: ignore[attr-defined]
-
-    try:
-        extract_qr_deeplink_from_screenshot = vision_module.extract_qr_deeplink_from_screenshot  # type: ignore[attr-defined]
-        print("[STEP4] vision_qr успешно загружен через importlib.util.")
-    except AttributeError:
-        raise RuntimeError(
-            "[STEP4] В vision_qr.py не найдена функция "
-            "`extract_qr_deeplink_from_screenshot`."
-        )
+print("[STEP4] *** NEW VERSION: network /confirm + console, без Vision ***")
 
 
 # ============================================================
@@ -84,8 +57,7 @@ async def _save_html(page: Page, label: str):
 
 async def _save_screenshot(page: Page, label: str) -> Optional[bytes]:
     """
-    Сохранить скрин всей страницы и вернуть PNG-байты
-    (для Vision) + оставить файл для отладки.
+    Сохранить скрин всей страницы (чисто для отладки).
     """
     _ensure_debug_dir()
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -97,6 +69,54 @@ async def _save_screenshot(page: Page, label: str) -> Optional[bytes]:
     except Exception as e:
         print(f"[STEP4-DEBUG] Ошибка сохранения скрина: {e}")
         return None
+
+
+def _save_console_log(messages: list[str], label: str) -> None:
+    """Сохранить логи консоли в текстовый файл."""
+    if not messages:
+        return
+    _ensure_debug_dir()
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(DEBUG_DIR_STEP4, f"{label}_{ts}.txt")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            for i, msg in enumerate(messages, start=1):
+                f.write(f"[{i}] {msg}\n")
+        print(f"[STEP4-DEBUG] Console log → {path}")
+    except Exception as e:
+        print(f"[STEP4-DEBUG] Ошибка сохранения console log: {e}")
+
+
+# ============================================================
+# PARSING DEEPLINK FROM TEXT
+# ============================================================
+
+_DEEPLINK_URL_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.\-]*://[^\s\"'<>]+)")
+
+
+def _extract_deeplink_from_text(text: str) -> Optional[str]:
+    """
+    Пытаемся вытащить диплинк из произвольной строки:
+      - ищем все "scheme://..." куски,
+      - фильтруем по ключевым словам (qr.nspk.ru, SBPQR://, mcash://),
+      - тримим кавычки/скобки по краям.
+    """
+    if not text:
+        return None
+
+    candidates = _DEEPLINK_URL_RE.findall(text)
+    if not candidates:
+        return None
+
+    def _clean(url: str) -> str:
+        return url.strip().strip("',\"()[]{}")
+
+    for raw in candidates:
+        url = _clean(raw)
+        if any(k in url for k in DEEP_LINK_KEYWORDS):
+            return url
+
+    return None
 
 
 # ============================================================
@@ -144,6 +164,115 @@ async def _wait_for_final_screen(page: Page) -> bool:
 
     print("[STEP4] ⚠ Таймаут ожидания финального экрана.")
     return False
+
+
+# ============================================================
+# ОЖИДАНИЕ ОТВЕТА API С NSPK-ССЫЛКОЙ (через событие response)
+# ============================================================
+
+async def _wait_for_nspk_payload(page: Page) -> Optional[str]:
+    """
+    Ловим ответ от API:
+      https://api.multitransfer.ru/.../multitransfer-qr-processing/.../confirm
+
+    Берём externalData.payload – там лежит ссылка вида https://qr.nspk.ru/...
+    """
+    print("[STEP4] Начинаю слушать network для ответа с NSPK payload...")
+
+    def _is_target_response(response) -> bool:
+        try:
+            url = response.url
+        except Exception:
+            return False
+
+        if (
+            "api.multitransfer.ru" in url
+            and "multitransfer-qr-processing" in url
+            and "/confirm" in url
+        ):
+            return True
+        return False
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+
+    def _on_response(response) -> None:
+        if fut.done():
+            return
+        try:
+            if _is_target_response(response):
+                fut.set_result(response)
+        except Exception:
+            return
+
+    page.on("response", _on_response)
+
+    try:
+        try:
+            # Ждём один подходящий ответ не дольше FINAL_SCREEN_MAX_WAIT_SECONDS
+            response = await asyncio.wait_for(fut, timeout=FINAL_SCREEN_MAX_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            print("[STEP4] Не дождались ответа /confirm (timeout).")
+            return None
+        except Exception as e:
+            print(f"[STEP4] Ошибка ожидания ответа /confirm: {e}")
+            return None
+
+        if not response:
+            return None
+
+        print(f"[STEP4] Поймали ответ /confirm: {response.url}")
+
+        # Парсим JSON
+        try:
+            data = await response.json()
+        except Exception as e:
+            print(f"[STEP4] Ошибка парсинга JSON из /confirm: {e}")
+            try:
+                text = await response.text()
+                print(
+                    "[STEP4-DEBUG] Тело ответа /confirm "
+                    f"(обрезано до 500 символов): {text[:500]}"
+                )
+            except Exception:
+                pass
+            return None
+
+        print(f"[STEP4-DEBUG] JSON /confirm: {data}")
+
+        # Структура ожидается такая:
+        # {
+        #   "transactionId": "...",
+        #   "processingId": "...",
+        #   "externalData": {
+        #       "payload": "https://qr.nspk.ru/... ?type=02&bank=..."
+        #   },
+        #   "error": { "code": 0, ... }
+        # }
+        payload = None
+        try:
+            external = data.get("externalData") or {}
+            payload = external.get("payload")
+        except Exception:
+            payload = None
+
+        if not payload:
+            print("[STEP4] В JSON /confirm не найден externalData.payload")
+            return None
+
+        parsed = _extract_deeplink_from_text(str(payload)) or str(payload)
+        if parsed and any(k in parsed for k in DEEP_LINK_KEYWORDS):
+            print(f"[STEP4] ✓ NSPK payload из /confirm: {parsed}")
+            return parsed
+
+        print(f"[STEP4] externalData.payload выглядит странно: {payload!r}")
+        return None
+
+    finally:
+        try:
+            page.off("response", _on_response)
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -226,7 +355,7 @@ def _send_webhook(
 
     status:
       - "created"      — диплинк успешно получен
-      - "No Terminals" — диплинк не получен (нет QR / Vision не смогла прочитать и т.д.)
+      - "No Terminals" — диплинк не получен (нет QR / сети / консоли)
     """
     payload = {
         "invoice_id": getattr(invoice, "id", None),
@@ -258,20 +387,58 @@ def _send_webhook(
 async def step4_wait_for_deeplink(page: Page, invoice) -> str:
     """
     Финальный шаг:
-      1) ждём, пока ты пройдёшь капчу и откроется финальная страница /finish-transfer,
-      2) даём 2 секунды на дорисовку QR,
-      3) делаем фуллскрин,
-      4) отправляем его в GPT-Vision и вытаскиваем URL,
-      5) при успехе — шлём диплинк вебхуком (status='created') и обновляем локальную БД,
-      6) при любой ошибке шага 4 — шлём вебхук с status='No Terminals'
-         и обновляем БД статусом 'error'.
+      1) подписываемся на консоль браузера и собираем все сообщения,
+      2) параллельно запускаем ожидание network-ответа /confirm с NSPK-ссылкой,
+      3) ждём, пока ты пройдёшь капчу и откроется финальная страница /finish-transfer,
+      4) сначала пробуем диплинк из /confirm,
+      5) если нет — пробуем диплинк из console.log,
+      6) если всё ещё нет — пишем ошибку (без Vision),
+      7) при успехе — шлём диплинк вебхуком (status='created') и обновляем локальную БД,
+      8) при любой ошибке — вебхук с status='No Terminals' и статус инвойса 'error'.
     """
     print(f"[STEP4] → Ожидание финального экрана для invoice={invoice.id}")
 
-    # 1. Ждём финальную страницу / QR
+    # --------------------------------------------------------
+    # 0. Подписка на console.log
+    # --------------------------------------------------------
+    console_messages: list[str] = []
+    console_deeplink: Optional[str] = None
+
+    def _on_console(msg) -> None:
+        nonlocal console_deeplink
+        try:
+            text = msg.text()
+        except Exception:
+            text = ""
+        if not text:
+            return
+
+        console_messages.append(text)
+
+        if console_deeplink is None:
+            dl = _extract_deeplink_from_text(text)
+            if dl:
+                console_deeplink = dl
+                print(f"[STEP4-CONSOLE] Найден диплинк в консоли: {dl}")
+
+    page.on("console", _on_console)
+
+    # --------------------------------------------------------
+    # 1. Фон: ждём NSPK из network /confirm
+    # --------------------------------------------------------
+    nspk_task = asyncio.create_task(_wait_for_nspk_payload(page))
+
+    # --------------------------------------------------------
+    # 2. Ждём финальную страницу / QR
+    # --------------------------------------------------------
     ok = await _wait_for_final_screen(page)
     if not ok:
+        if not nspk_task.done():
+            nspk_task.cancel()
+
         await _save_html(page, "final_timeout")
+        _save_console_log(console_messages, "console_final_timeout")
+
         error_msg = (
             "[STEP4] Не дождались финальной страницы с QR "
             "(скорее всего, капча не пройдена или поток не завершён)."
@@ -282,45 +449,81 @@ async def step4_wait_for_deeplink(page: Page, invoice) -> str:
 
         raise RuntimeError(error_msg)
 
-    # Чутка ждём, чтобы QR точно успел прорендериться
+    # Чутка ждём, чтобы всё дорисовалось
     await page.wait_for_timeout(QR_APPEAR_DELAY_MS)
 
     # Дамп финальной HTML для отладки
     await _save_html(page, "final_page_loaded")
 
-    # Скриншот для Vision
-    png_bytes = await _save_screenshot(page, "fullpage")
-    if not png_bytes:
-        error_msg = "[STEP4] Не удалось сделать скрин для Vision."
+    # --------------------------------------------------------
+    # 3. Дождаться (немного) результат NSPK-задачи
+    # --------------------------------------------------------
+    deeplink_from_network: Optional[str] = None
+    try:
+        if not nspk_task.done():
+            deeplink_from_network = await asyncio.wait_for(nspk_task, timeout=5)
+        else:
+            deeplink_from_network = nspk_task.result()
+    except asyncio.TimeoutError:
+        print("[STEP4] NSPK-пейлоад по сети не успел за 5 секунд после финальной страницы.")
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        print(f"[STEP4] Ошибка фоновой задачи NSPK: {e}")
 
-        _update_local_invoice(invoice, deeplink=None, status="error", error_message=error_msg)
-        _send_webhook(invoice, deeplink=None, status="No Terminals", error_reason=error_msg)
+    # Сохраняем логи консоли (независимо от исхода)
+    _save_console_log(console_messages, "console_after_final")
 
-        raise RuntimeError(error_msg)
+    # --------------------------------------------------------
+    # 4. Если есть диплинк из сети — используем его и выходим
+    # --------------------------------------------------------
+    if deeplink_from_network:
+        deeplink = deeplink_from_network
+        print(f"[STEP4] ✓ Диплинк получен из network-response /confirm: {deeplink}")
 
-    # Вызов GPT-Vision
-    deeplink = extract_qr_deeplink_from_screenshot(png_bytes)
+        await _save_html(page, "qr_found_network")
+        await _save_screenshot(page, "final_network")
 
-    if not deeplink:
-        await _save_html(page, "vision_fail")
-        error_msg = "[STEP4] Vision не смогла извлечь URL из QR-кода."
+        _send_webhook(invoice, deeplink=deeplink, status="created")
+        _update_local_invoice(invoice, deeplink=deeplink, status="created", error_message=None)
 
-        _update_local_invoice(invoice, deeplink=None, status="error", error_message=error_msg)
-        _send_webhook(invoice, deeplink=None, status="No Terminals", error_reason=error_msg)
+        print(
+            f"[DONE] Invoice {getattr(invoice, 'id', '?')} успешно обработан "
+            f"(по network /confirm), диплинк: {deeplink!r}"
+        )
+        return deeplink
 
-        raise RuntimeError(error_msg)
+    # --------------------------------------------------------
+    # 5. Если диплинк нашли в консоли — используем его
+    # --------------------------------------------------------
+    if console_deeplink:
+        deeplink = console_deeplink
+        print(f"[STEP4] ✓ Диплинк найден в консоли: {deeplink}")
 
-    print(f"[STEP4] ✓ Диплинк получен из Vision: {deeplink}")
+        await _save_html(page, "qr_found_console")
+        await _save_screenshot(page, "final_console")
 
-    await _save_html(page, "qr_found")
+        _send_webhook(invoice, deeplink=deeplink, status="created")
+        _update_local_invoice(invoice, deeplink=deeplink, status="created", error_message=None)
 
-    # Успешный кейс
-    _send_webhook(invoice, deeplink=deeplink, status="created")
-    _update_local_invoice(invoice, deeplink=deeplink, status="created", error_message=None)
+        print(
+            f"[DONE] Invoice {getattr(invoice, 'id', '?')} успешно обработан "
+            f"(по консоли), диплинк: {deeplink!r}"
+        )
+        return deeplink
 
-    print(
-        f"[DONE] Invoice {getattr(invoice, 'id', '?')} успешно обработан, "
-        f"диплинк из STEP4: {deeplink!r}"
+    # --------------------------------------------------------
+    # 6. Нет диплинка ни из сети, ни из консоли → ошибка
+    # --------------------------------------------------------
+    await _save_html(page, "deeplink_not_found")
+    await _save_screenshot(page, "deeplink_not_found")
+
+    error_msg = (
+        "[STEP4] Не удалось извлечь диплинк ни из ответа /confirm, "
+        "ни из console.log (Vision временно отключён)."
     )
 
-    return deeplink
+    _update_local_invoice(invoice, deeplink=None, status="error", error_message=error_msg)
+    _send_webhook(invoice, deeplink=None, status="No Terminals", error_reason=error_msg)
+
+    raise RuntimeError(error_msg)
