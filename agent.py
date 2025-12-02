@@ -4,6 +4,9 @@ import asyncio
 from datetime import datetime
 from typing import Optional
 
+import requests  # ⬅ отправка вебхуков
+from dotenv import load_dotenv  # ⬅ НОВОЕ: загрузка .env при старте процесса
+
 from playwright.async_api import (
     async_playwright,
     Page,
@@ -13,20 +16,32 @@ from playwright.async_api import (
 from db import SessionLocal
 from models import Invoice, Setting
 from agent_config import (
-    MULTITRANSFER_BASE_URL,  # пусть пока будет, вдруг используем позже
+    MULTITRANSFER_BASE_URL,
     NAVIGATION_TIMEOUT_MS,
     DEFAULT_USER_AGENT,
+    MAX_CONCURRENT_INVOICES,  # ⬅ НОВОЕ: берём лимит из конфига
 )
 
 # шаги вынесены в отдельные файлы
 from multitransfer_step1 import step1_fill_amount_and_open_methods
 from multitransfer_step2 import step2_select_bank
 from multitransfer_step3 import step3_fill_recipient_and_sender
-from multitransfer_step4 import step4_wait_for_deeplink  # НОВЫЙ ШАГ 4
+from multitransfer_step4 import step4_wait_for_deeplink  # шаг 4 (deeplink + vision/webhook)
 
 
-# Максимальное количество инвойсов, которые агент обрабатывает параллельно
-MAX_CONCURRENT_INVOICES = 3
+# ============================================================
+#   ЗАГРУЗКА .env (ключи, настройки и т.д.)
+# ============================================================
+
+# .env лежит в корне проекта aideon_agent и НЕ коммитится в git.
+# Пример .env:
+#   AIDEON_OPENAI_API_KEY=sk-proj-...
+#   OPENAI_VISION_MODEL=gpt-4.1-mini
+#   OPENAI_VISION_FALLBACK_MODEL=gpt-4.1
+load_dotenv()
+
+
+WEBHOOK_URL = "https://joker-pay.com/webhook/tips"
 
 
 # ============================================================
@@ -62,6 +77,65 @@ def _mark_session_status(status: str, message: str = "") -> None:
     _set_setting("SESSION_STATUS", status)
     _set_setting("SESSION_MESSAGE", message or "")
     _set_setting("SESSION_UPDATED_AT", now)
+
+
+# ============================================================
+#   ФИНАЛИЗАЦИЯ ИНВОЙСА ПРИ ОШИБКЕ НА ЛЮБОМ ШАГЕ (кроме STEP4)
+# ============================================================
+
+def _finalize_invoice_error_any_step(invoice_id: int, error_message: str) -> None:
+    """
+    Универсальная финализация инвойса при ошибке на ЛЮБОМ шаге (STEP1–STEP3 и др.).
+
+    Делает:
+      - пишет в БД: status='error', error_message=<причина>, deeplink=None
+      - отправляет webhook с status='No Terminals', пустым deeplink и полем error
+    """
+    db = SessionLocal()
+    inv: Optional[Invoice] = None
+    try:
+        inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        if not inv:
+            print(f"[AGENT-ERROR] Не найден invoice id={invoice_id} для финализации ошибки.")
+        else:
+            inv.status = "error"
+            inv.error_message = error_message
+            inv.deeplink = None
+
+            db.commit()
+            print(
+                f"[AGENT-ERROR] Инвойс id={inv.id} обновлён: "
+                f"status=error, error_message={inv.error_message}"
+            )
+    except Exception as e:
+        db.rollback()
+        print(f"[AGENT-ERROR] Ошибка при записи ошибки в БД для invoice={invoice_id}: {e}")
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+    # Webhook с No Terminals
+    payload = {
+        "invoice_id": invoice_id,
+        "invoice_external_id": getattr(inv, "invoice_id", None) if inv else None,
+        "amount": float(getattr(inv, "amount", 0) or 0) if inv else 0,
+        "currency": getattr(inv, "currency", "643") if inv else "643",
+        "deeplink": "",
+        "status": "No Terminals",
+        "created_at": datetime.utcnow().isoformat(timespec="seconds"),
+        "error": error_message,
+    }
+
+    print(f"[AGENT-ERROR] POST (No Terminals) → {WEBHOOK_URL}")
+    print(f"[AGENT-ERROR] Payload: {payload}")
+
+    try:
+        r = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        print(f"[AGENT-ERROR] Ответ: {r.status_code} {r.text[:200]}")
+    except Exception as e:
+        print(f"[AGENT-ERROR] Webhook error (No Terminals) для invoice={invoice_id}: {e}")
 
 
 # ============================================================
@@ -181,7 +255,8 @@ async def process_invoice(context: BrowserContext, invoice: Invoice) -> None:
          → помечаем invoice.status = 'waiting_captcha' и подсвечиваем вкладку.
       5. Шаг 4: ждём финальный экран с QR/СБП-НСПК, вытаскиваем диплинк.
          ВАЖНО: step4 сам шлёт вебхук и управляет финальным статусом/диплинком.
-      6. Вкладку НЕ закрываем — остаётся висеть для оператора/дальнейших действий.
+      6. При успехе вкладку не закрываем (остаётся для оператора),
+         при ошибке — вкладку закрываем, чтобы не копить мусор.
     """
     page: Page = await context.new_page()
     print(f"[TAB] Открыта новая вкладка для invoice={invoice.id}")
@@ -232,22 +307,28 @@ async def process_invoice(context: BrowserContext, invoice: Invoice) -> None:
         print(f"[DONE] Invoice {inv_db.id} успешно обработан, диплинк из STEP4: {deeplink!r}")
         _mark_session_status("ok", f"Processed invoice {inv_db.id} with deeplink")
 
+        # Вкладку при успехе оставляем открытой — вдруг оператору надо что-то досмотреть.
+        print(f"[TAB] Вкладка для invoice={invoice.id} остаётся открытой после успешной обработки.")
+
     except Exception as e:
-        print(f"[ERROR] Ошибка обработки invoice={invoice.id}: {e}")
+        error_msg = str(e)
+        print(f"[ERROR] Ошибка обработки invoice={invoice.id}: {error_msg}")
+
+        # STEP4 уже сам шлёт вебхук и ставит статусы/ошибку,
+        # поэтому здесь не дублируем для ошибок, начинающихся с "[STEP4]"
+        if not error_msg.startswith("[STEP4]"):
+            _finalize_invoice_error_any_step(invoice.id, error_message=error_msg)
+
+        _mark_session_status("error", f"Error while processing invoice {invoice.id}: {error_msg}")
+
+        # При любой ошибке вкладку закрываем, чтобы не засорять браузер
         try:
-            inv_db = db.query(Invoice).filter(Invoice.id == invoice.id).first()
-            if inv_db:
-                inv_db.status = "error"
-                inv_db.error_message = str(e)
-                db.commit()
-        except Exception as e2:
-            print(f"[ERROR] Доп. ошибка при сохранении статуса error для invoice={invoice.id}: {e2}")
-        _mark_session_status("error", f"Error while processing invoice {invoice.id}: {e}")
+            await page.close()
+            print(f"[TAB] Вкладка для invoice={invoice.id} закрыта из-за ошибки.")
+        except Exception as e_close:
+            print(f"[TAB] Не удалось закрыть вкладку invoice={invoice.id}: {e_close}")
     finally:
         db.close()
-
-    # Вкладку НЕ закрываем — ждём дальнейшего решения, что с ней делать.
-    print(f"[TAB] Вкладка для invoice={invoice.id} остаётся открытой после получения диплинка.")
 
 
 # ============================================================

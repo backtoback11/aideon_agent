@@ -150,12 +150,17 @@ async def _wait_for_final_screen(page: Page) -> bool:
 # ОБНОВЛЕНИЕ ЛОКАЛЬНОЙ БД
 # ============================================================
 
-def _update_local_invoice(invoice, deeplink: str, status: str = "created") -> None:
+def _update_local_invoice(
+    invoice_like,
+    deeplink: Optional[str],
+    status: str,
+    error_message: Optional[str] = None,
+) -> None:
     """
     Обновляем локальный инвойс в базе Aideon Agent:
       - сначала ищем по внутреннему id (Invoice.id),
       - если не нашли — по внешнему invoice_id (строка),
-      - пишем deeplink и статус.
+      - пишем deeplink, статус и error_message.
     """
     try:
         db = SessionLocal()
@@ -166,8 +171,8 @@ def _update_local_invoice(invoice, deeplink: str, status: str = "created") -> No
     try:
         inv = None
 
-        inv_id = getattr(invoice, "id", None)
-        inv_ext = getattr(invoice, "invoice_id", None)
+        inv_id = getattr(invoice_like, "id", None)
+        inv_ext = getattr(invoice_like, "invoice_id", None)
 
         if inv_id is not None:
             inv = db.query(InvoiceModel).filter(InvoiceModel.id == inv_id).first()
@@ -188,11 +193,13 @@ def _update_local_invoice(invoice, deeplink: str, status: str = "created") -> No
 
         inv.deeplink = deeplink
         inv.status = status
+        inv.error_message = error_message
 
         db.commit()
         print(
             f"[STEP4-DB] ✔ Обновлён инвойс id={inv.id}: "
-            f"status={inv.status}, deeplink={inv.deeplink}"
+            f"status={inv.status}, deeplink={inv.deeplink or '—'}, "
+            f"error_message={inv.error_message or '—'}"
         )
     except Exception as e:
         db.rollback()
@@ -208,16 +215,31 @@ def _update_local_invoice(invoice, deeplink: str, status: str = "created") -> No
 # WEBHOOK
 # ============================================================
 
-def _send_webhook(invoice, deeplink: str):
+def _send_webhook(
+    invoice,
+    deeplink: Optional[str],
+    status: str,
+    error_reason: Optional[str] = None,
+):
+    """
+    Отправка постбека на joker-pay.com.
+
+    status:
+      - "created"      — диплинк успешно получен
+      - "No Terminals" — диплинк не получен (нет QR / Vision не смогла прочитать и т.д.)
+    """
     payload = {
         "invoice_id": getattr(invoice, "id", None),
         "invoice_external_id": getattr(invoice, "invoice_id", None),
         "amount": float(getattr(invoice, "amount", 0) or 0),
         "currency": getattr(invoice, "currency", "RUB"),
-        "deeplink": deeplink,
-        "status": "created",
+        "deeplink": deeplink or "",
+        "status": status,
         "created_at": datetime.utcnow().isoformat(timespec="seconds"),
     }
+
+    if error_reason:
+        payload["error"] = error_reason
 
     print(f"[STEP4] POST → {WEBHOOK_URL}")
     print(f"[STEP4] Payload: {payload}")
@@ -225,13 +247,6 @@ def _send_webhook(invoice, deeplink: str):
     try:
         r = requests.post(WEBHOOK_URL, json=payload, timeout=10)
         print(f"[STEP4] Ответ: {r.status_code} {r.text[:200]}")
-
-        # если webhook успешно принял — обновляем локальную БД
-        if 200 <= r.status_code < 300:
-            _update_local_invoice(invoice, deeplink, status="created")
-            print(f"[DONE] Invoice {getattr(invoice, 'id', '?')} успешно обработан, deeplink сохранён.")
-        else:
-            print(f"[STEP4] ⚠ Webhook вернул неуспешный статус: {r.status_code}")
     except Exception as e:
         print(f"[STEP4] Webhook error: {e}")
 
@@ -247,17 +262,25 @@ async def step4_wait_for_deeplink(page: Page, invoice) -> str:
       2) даём 2 секунды на дорисовку QR,
       3) делаем фуллскрин,
       4) отправляем его в GPT-Vision и вытаскиваем URL,
-      5) шлём диплинк вебхуком и обновляем локальную БД.
+      5) при успехе — шлём диплинк вебхуком (status='created') и обновляем локальную БД,
+      6) при любой ошибке шага 4 — шлём вебхук с status='No Terminals'
+         и обновляем БД статусом 'error'.
     """
     print(f"[STEP4] → Ожидание финального экрана для invoice={invoice.id}")
 
+    # 1. Ждём финальную страницу / QR
     ok = await _wait_for_final_screen(page)
     if not ok:
         await _save_html(page, "final_timeout")
-        raise RuntimeError(
+        error_msg = (
             "[STEP4] Не дождались финальной страницы с QR "
             "(скорее всего, капча не пройдена или поток не завершён)."
         )
+
+        _update_local_invoice(invoice, deeplink=None, status="error", error_message=error_msg)
+        _send_webhook(invoice, deeplink=None, status="No Terminals", error_reason=error_msg)
+
+        raise RuntimeError(error_msg)
 
     # Чутка ждём, чтобы QR точно успел прорендериться
     await page.wait_for_timeout(QR_APPEAR_DELAY_MS)
@@ -268,19 +291,36 @@ async def step4_wait_for_deeplink(page: Page, invoice) -> str:
     # Скриншот для Vision
     png_bytes = await _save_screenshot(page, "fullpage")
     if not png_bytes:
-        raise RuntimeError("[STEP4] Не удалось сделать скрин для Vision.")
+        error_msg = "[STEP4] Не удалось сделать скрин для Vision."
+
+        _update_local_invoice(invoice, deeplink=None, status="error", error_message=error_msg)
+        _send_webhook(invoice, deeplink=None, status="No Terminals", error_reason=error_msg)
+
+        raise RuntimeError(error_msg)
 
     # Вызов GPT-Vision
     deeplink = extract_qr_deeplink_from_screenshot(png_bytes)
 
     if not deeplink:
         await _save_html(page, "vision_fail")
-        raise RuntimeError("[STEP4] Vision не смогла извлечь URL из QR-кода.")
+        error_msg = "[STEP4] Vision не смогла извлечь URL из QR-кода."
+
+        _update_local_invoice(invoice, deeplink=None, status="error", error_message=error_msg)
+        _send_webhook(invoice, deeplink=None, status="No Terminals", error_reason=error_msg)
+
+        raise RuntimeError(error_msg)
 
     print(f"[STEP4] ✓ Диплинк получен из Vision: {deeplink}")
 
     await _save_html(page, "qr_found")
 
-    _send_webhook(invoice, deeplink)
+    # Успешный кейс
+    _send_webhook(invoice, deeplink=deeplink, status="created")
+    _update_local_invoice(invoice, deeplink=deeplink, status="created", error_message=None)
+
+    print(
+        f"[DONE] Invoice {getattr(invoice, 'id', '?')} успешно обработан, "
+        f"диплинк из STEP4: {deeplink!r}"
+    )
 
     return deeplink

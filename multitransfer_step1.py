@@ -57,7 +57,7 @@ async def step1_fill_amount_and_open_methods(page: Page, amount: float) -> None:
     print(f"[STEP1] Сумма заполнена: {amount}")
 
     # ждём пересчёта, чтобы форма «приняла» сумму и добавила строку с курсом
-    await page.wait_for_timeout(3500)
+    await page.wait_for_timeout(5000)
 
     # === DEBUG: дамп после ввода суммы ===
     try:

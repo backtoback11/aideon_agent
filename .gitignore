@@ -7,3 +7,4 @@ debug/
 .vscode/
 /playwright-report/
 /playwright/.cache/
+.env

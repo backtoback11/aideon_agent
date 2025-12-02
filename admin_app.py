@@ -8,9 +8,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.status import HTTP_302_FOUND
 from pydantic import BaseModel
+from dotenv import load_dotenv  # ⬅ НОВОЕ: подхватываем .env
 
 from db import SessionLocal, Base, engine
 from models import Invoice, Proxy, Setting
+
+# -------------------------------------------------------------
+# ЗАГРУЗКА .env (ключи, конфиги и т.п.)
+# -------------------------------------------------------------
+# .env лежит в корне проекта aideon_agent и НЕ коммитится.
+load_dotenv()
 
 # -------------------------------------------------------------
 # БАЗОВЫЕ ПУТИ
@@ -425,6 +432,7 @@ def toggle_prmoney_worker():
         cur = _db_get_setting(db, WORKER_PRMONEY_KEY)
         new_val = "0" if cur == "1" else "1"
         _db_set_setting(db, WORKER_PRMONEY_KEY, new_val)
+        _db_set_setting(db, "SESSION_MESSAGE", "")  # опционально: чистим сообщение
         return RedirectResponse("/admin", status_code=HTTP_302_FOUND)
     finally:
         db.close()
