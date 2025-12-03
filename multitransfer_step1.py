@@ -30,7 +30,7 @@ async def step1_fill_amount_and_open_methods(page: Page, amount: float) -> None:
     # 1) по placeholder '0 RUB'
     try:
         amount_input = page.get_by_placeholder("0 RUB")
-        await amount_input.wait_for(timeout=5000)
+        await amount_input.wait_for(timeout=2000)
         print("[STEP1] Использую инпут по placeholder='0 RUB'")
     except TimeoutError as e:  # на случай, если импортировали не то имя
         raise e
@@ -47,7 +47,7 @@ async def step1_fill_amount_and_open_methods(page: Page, amount: float) -> None:
                 "input[inputmode='decimal'], "
                 "input[type='text']"
             ).first
-            await amount_input.wait_for(timeout=5000)
+            await amount_input.wait_for(timeout=2000)
             print("[STEP1] Использую первый numeric/text инпут как сумму (fallback)")
         except PlaywrightTimeoutError:
             raise RuntimeError("[STEP1] Не удалось найти поле для суммы")
@@ -77,7 +77,7 @@ async def step1_fill_amount_and_open_methods(page: Page, amount: float) -> None:
     print(f"[STEP1] Сумма заполнена: {text_amount}")
 
     # ждём пересчёта, чтобы форма «приняла» сумму и добавила строку с курсом
-    await page.wait_for_timeout(5000)
+    await page.wait_for_timeout(1500)
 
     # === DEBUG: дамп после ввода суммы ===
     try:
@@ -105,7 +105,7 @@ async def step1_fill_amount_and_open_methods(page: Page, amount: float) -> None:
 
     try:
         method_row = page.get_by_text("Выберите способ перевода", exact=False).first
-        await method_row.wait_for(timeout=8000)
+        await method_row.wait_for(timeout=100)
         await method_row.click()
         print("[STEP1] Клик по 'Выберите способ перевода' выполнен")
     except PlaywrightTimeoutError:
@@ -114,7 +114,7 @@ async def step1_fill_amount_and_open_methods(page: Page, amount: float) -> None:
             container = page.locator("button, div[role='button']").filter(
                 has_text="способ перевода"
             ).first
-            await container.wait_for(timeout=8000)
+            await container.wait_for(timeout=100)
             await container.click()
             print("[STEP1] Клик по контейнеру способа перевода выполнен (fallback)")
         except PlaywrightTimeoutError:
@@ -122,5 +122,5 @@ async def step1_fill_amount_and_open_methods(page: Page, amount: float) -> None:
             raise RuntimeError("[STEP1] Не удалось открыть список способов перевода")
 
     # даём списку способов/банков прогрузиться, но НИЧЕГО не ждём специфического
-    await page.wait_for_timeout(1000)
+    await page.wait_for_timeout(150)
     print("[STEP1] ✅ Шаг 1 завершён (список способов должен быть открыт, дальше работает STEP2)")

@@ -103,7 +103,7 @@ async def _fill_by_label_or_name(
     if label_text:
         try:
             el = page.get_by_label(label_text)
-            await el.wait_for(timeout=2000)
+            await el.wait_for(timeout=100)
             await el.fill(str(value))
             print(f"[STEP3] Заполнили по label '{label_text}' значением '{value}'")
             return
@@ -342,7 +342,7 @@ async def step3_fill_recipient_and_sender(page: Page, invoice) -> None:
 
     try:
         # Небольшая пауза, чтобы форма успела провалидироваться
-        await page.wait_for_timeout(800)
+        await page.wait_for_timeout(200)
 
         await _save_step3_html(page, label="before_continue")
 

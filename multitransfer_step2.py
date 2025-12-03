@@ -77,7 +77,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
     print(f"[STEP2] → Выбор банка/оффера (bank={bank_name!r})")
 
     # даём странице чуть времени, чтобы подгрузились офферы
-    await page.wait_for_timeout(2000)
+    await page.wait_for_timeout(150)
     await _save_step2_html(page, label="before_select")
 
     if not bank_name:
@@ -103,7 +103,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
 
         if attempt == 2:
             print("[STEP2] Вторая попытка — страница могла долго грузиться…")
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(500)
             await _save_step2_html(page, label="retry_before_select")
 
         for text_variant in search_variants:
@@ -111,7 +111,7 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
                 print(f"[STEP2] Попытка #{attempt}: ищу '{text_variant}'…")
 
                 candidate = page.get_by_text(text_variant, exact=False).first
-                await candidate.wait_for(timeout=12000)
+                await candidate.wait_for(timeout=150)
                 await candidate.scroll_into_view_if_needed()
                 print(f"[STEP2] Найден текст '{text_variant}', ищем контейнер…")
 
@@ -163,11 +163,11 @@ async def step2_select_bank(page: Page, bank_name: Optional[str]) -> None:
     print("[STEP2] Клик по банку выполнен, ищу кнопку 'Продолжить'…")
 
     try:
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(150)
         await _save_step2_html(page, label="before_continue")
 
         continue_btn = page.get_by_role("button", name="Продолжить").first
-        await continue_btn.wait_for(timeout=12000)
+        await continue_btn.wait_for(timeout=150)
         await continue_btn.scroll_into_view_if_needed()
         await continue_btn.click()
 

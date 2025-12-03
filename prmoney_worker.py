@@ -11,7 +11,7 @@ from models import Invoice, Setting
 from prmoney_fetcher import fetch_pending_invoices  # уже есть в проекте
 
 
-PRMONEY_POLL_INTERVAL_SEC = 5  # каждые 5 секунд опрашиваем /test1
+PRMONEY_POLL_INTERVAL_SEC = 1  # каждые 5 секунд опрашиваем /test1
 PRMONEY_LAST_ID_KEY = "PRMONEY_LAST_ID"  # ключ в таблице settings
 
 
