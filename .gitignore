@@ -9,3 +9,4 @@ debug/
 /playwright/.cache/
 .env
 vision_qr.py
+Бекап/

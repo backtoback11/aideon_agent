@@ -10,6 +10,7 @@ from playwright.async_api import (
     async_playwright,
     Page,
     BrowserContext,
+    TimeoutError as PlaywrightTimeoutError,
 )
 
 from db import SessionLocal
@@ -26,6 +27,9 @@ from multitransfer_step1 import step1_fill_amount_and_open_methods
 from multitransfer_step2 import step2_select_bank
 from multitransfer_step3 import step3_fill_recipient_and_sender
 from multitransfer_step4 import step4_wait_for_deeplink
+
+# прокси-менеджер (НОВАЯ версия)
+from proxy_manager import get_next_proxy_for_launch, mark_proxy_fail, mark_proxy_success
 
 load_dotenv()
 
@@ -113,17 +117,59 @@ def _finalize_invoice_error_any_step(invoice_id: int, error_message: str) -> Non
 
 
 # ============================================================
-#   PLAYWRIGHT CONTEXT
+#   PLAYWRIGHT CONTEXT + ПРОКСИ (АКТУАЛЬНАЯ ВЕРСИЯ)
 # ============================================================
 
 async def open_context(play) -> BrowserContext:
-    browser = await play.chromium.launch(
-        headless=False,
-        args=[
+    """
+    Открываем Chromium-контекст.
+    Используем прокси из БД (ProxyLaunchConfig), если он есть и активен.
+    """
+    proxy_cfg = get_next_proxy_for_launch()
+
+    launch_kwargs: dict = {
+        "headless": False,
+        "args": [
             f"--user-agent={DEFAULT_USER_AGENT}",
             "--disable-blink-features=AutomationControlled",
         ],
-    )
+    }
+
+    if proxy_cfg:
+        # proxy_cfg: ProxyLaunchConfig(id, label, protocol, server, username, password)
+        print(
+            "[PROXY] Используем прокси для браузера: "
+            f"id={proxy_cfg.id}, label={proxy_cfg.label!r}, "
+            f"protocol={proxy_cfg.protocol!r}, server={proxy_cfg.server!r}"
+        )
+
+        # ВАЖНО: сюда передаём обычный dict, а не объект ProxyLaunchConfig
+        launch_kwargs["proxy"] = {
+            "server": proxy_cfg.server,           # напр. "http://45.148.240.152:63030"
+            "username": proxy_cfg.username or None,
+            "password": proxy_cfg.password or None,
+        }
+    else:
+        print("[PROXY] Активных прокси в БД нет → запускаем без прокси")
+
+    try:
+        browser = await play.chromium.launch(**launch_kwargs)
+    except Exception as e:
+        # если есть прокси — помечаем его как упавший
+        if proxy_cfg:
+            try:
+                mark_proxy_fail(proxy_cfg.id)
+            except Exception as ie:
+                print(f"[PROXY] Ошибка при mark_proxy_fail: {ie}")
+        raise
+
+    # Если браузер успешно поднялся — считаем, что прокси живой
+    if proxy_cfg:
+        try:
+            mark_proxy_success(proxy_cfg.id)
+        except Exception as ie:
+            print(f"[PROXY] Ошибка при mark_proxy_success: {ie}")
+
     context = await browser.new_context(
         viewport={"width": 1366, "height": 768},
         user_agent=DEFAULT_USER_AGENT,
@@ -243,7 +289,6 @@ async def process_invoice(context: BrowserContext, invoice: Invoice) -> None:
 
         _mark_session_status("ok", f"Processed invoice {inv_db.id}")
 
-        # --- РАНЬШЕ ЗАКРЫВАЛИ ВКЛАДКУ ЗДЕСЬ ---
         if DEBUG_KEEP_TABS:
             print(f"[TAB] Вкладка invoice={invoice.id} оставлена открытой (DEBUG_KEEP_TABS).")
         else:
@@ -264,7 +309,6 @@ async def process_invoice(context: BrowserContext, invoice: Invoice) -> None:
 
         _mark_session_status("error", error_msg)
 
-        # --- РАНЬШЕ ЗАКРЫВАЛИ ВКЛАДКУ ЗДЕСЬ ПРИ ОШИБКЕ ---
         if DEBUG_KEEP_TABS:
             print(f"[TAB] Вкладка invoice={invoice.id} НЕ закрыта из-за ошибки (DEBUG_KEEP_TABS).")
         else:
