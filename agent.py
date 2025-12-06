@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -10,7 +11,6 @@ from playwright.async_api import (
     async_playwright,
     Page,
     BrowserContext,
-    TimeoutError as PlaywrightTimeoutError,
 )
 
 from db import SessionLocal
@@ -39,6 +39,9 @@ WEBHOOK_URL = "https://joker-pay.com/webhook/tips"
 # DEBUG: не закрывать вкладки после обработки
 # --------------------------------------------
 DEBUG_KEEP_TABS = True  # True → вкладки остаются открытыми для отладки
+
+# Путь к Aideon Helper JS (новый модуль)
+HELPER_JS_PATH = Path(__file__).resolve().parent / "browser" / "aideon_helper.js"
 
 
 # ============================================================
@@ -253,6 +256,19 @@ async def process_invoice(context: BrowserContext, invoice: Invoice) -> None:
     page = await context.new_page()
     print(f"[TAB] Открыта новая вкладка для invoice={invoice.id}")
 
+    # --------------------------------------------
+    # НОВОЕ: инжект Aideon Helper JS в вкладку
+    # --------------------------------------------
+    try:
+        if HELPER_JS_PATH.exists():
+            helper_js_code = HELPER_JS_PATH.read_text(encoding="utf-8")
+            await page.add_init_script(helper_js_code)
+            print(f"[AIDEON-HELPER] aideon_helper.js инжектирован для invoice={invoice.id}")
+        else:
+            print(f"[AIDEON-HELPER] WARN: файл {HELPER_JS_PATH} не найден, helper не подключён")
+    except Exception as e:
+        print(f"[AIDEON-HELPER] Ошибка инжекта helper JS: {e}")
+
     db = SessionLocal()
     try:
         inv_db = db.query(Invoice).filter(Invoice.id == invoice.id).first()
@@ -335,6 +351,18 @@ async def run_agent():
         print(f"[AGENT] Открываю базовую вкладку: {base_url}")
         try:
             base_page = await context.new_page()
+
+            # Инжект helper JS и в базовую форму (для будущего использования)
+            try:
+                if HELPER_JS_PATH.exists():
+                    helper_js_code = HELPER_JS_PATH.read_text(encoding="utf-8")
+                    await base_page.add_init_script(helper_js_code)
+                    print("[AIDEON-HELPER] helper JS инжектирован в базовую вкладку")
+                else:
+                    print(f"[AIDEON-HELPER] WARN: файл {HELPER_JS_PATH} не найден для базовой вкладки")
+            except Exception as e:
+                print(f"[AIDEON-HELPER] Ошибка инжекта helper JS в базовую вкладку: {e}")
+
             await base_page.goto(base_url)
             _mark_session_status("ok", "Base form opened")
         except Exception as e:

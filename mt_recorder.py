@@ -195,6 +195,275 @@ async def snapshot_window_state(page: Page, session_id: str, label: str) -> None
 
 
 # ------------------------------------------------------------
+# СНИМОК СОСТОЯНИЯ MULTITRANSFER (stepsData, 'Способ перевода', офферы)
+# ------------------------------------------------------------
+
+async def snapshot_mt_state(page: Page, session_id: str, label: str) -> None:
+    """
+    Читает с клиента:
+      - stepsData из localStorage
+      - amount / currencyAmount / amountOk
+      - наличие кликабельного "Способ перевода"
+      - наличие офферов / 'Выбрать'
+      - текст 'нет доступных способов'
+    """
+    _ensure_log_dir()
+    js = """
+    () => {
+      const info = {
+        stepsRaw: null,
+        amountOk: false,
+        amount: null,
+        currencyAmount: null,
+        methodLabelFound: false,
+        methodClickable: false,
+        methodRect: null,
+        offersCount: 0,
+        hasOfferButton: false,
+        hasNoOffersText: false,
+      };
+
+      // --- 1) localStorage.stepsData ---
+      try {
+        const raw = window.localStorage.getItem("stepsData");
+        if (raw) {
+          info.stepsRaw = raw.length > 2000 ? raw.slice(0, 2000) + "...(truncated)" : raw;
+
+          const data = JSON.parse(raw);
+          const stepsData =
+            data && data.state && data.state.stepsData
+              ? data.state.stepsData
+              : null;
+
+          const s1 = stepsData ? (stepsData["1"] || stepsData[1] || null) : null;
+
+          if (s1) {
+            const aRaw = String(s1.amount ?? "").replace(",", ".").trim();
+            const caRaw = String(s1.currencyAmount ?? "").replace(",", ".").trim();
+
+            const a = parseFloat(aRaw || "0") || 0;
+            const ca = parseFloat(caRaw || "0") || 0;
+
+            info.amount = a;
+            info.currencyAmount = ca;
+            if (a > 0 && ca > 0) {
+              info.amountOk = true;
+            }
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      // --- 2) ищем 'Способ перевода' / 'Выберите способ...' ---
+      try {
+        const allNodes = Array.from(document.querySelectorAll("*"));
+        const labelNodes = allNodes.filter((el) => {
+          const t = (el.textContent || "").toLowerCase();
+          return (
+            t.includes("способ перевода") ||
+            t.includes("способ оплаты") ||
+            t.includes("выберите способ")
+          );
+        });
+
+        if (labelNodes.length > 0) {
+          info.methodLabelFound = true;
+
+          let clickable = null;
+          for (const labelEl of labelNodes) {
+            let candidate = labelEl.closest(
+              "button, [role='button'], a, .css-1cban0a, .css-1thsucp"
+            );
+            if (!candidate) continue;
+
+            const style = window.getComputedStyle(candidate);
+            const rect = candidate.getBoundingClientRect();
+
+            const disabled =
+              candidate.disabled === true ||
+              candidate.getAttribute("aria-disabled") === "true" ||
+              style.pointerEvents === "none" ||
+              style.cursor === "not-allowed" ||
+              parseFloat(style.opacity || "1") < 0.5;
+
+            if (disabled) continue;
+            if (rect.width <= 0 || rect.height <= 0) continue;
+
+            clickable = candidate;
+            info.methodClickable = true;
+            info.methodRect = {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            };
+            break;
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      // --- 3) список офферов / кнопки 'Выбрать' ---
+      try {
+        const buttons = Array.from(document.querySelectorAll("button, [role='button']"));
+        const offers = buttons.filter((el) => {
+          const t = (el.textContent || "").toLowerCase();
+          return t.includes("выбрать");
+        });
+        info.offersCount = offers.length;
+        info.hasOfferButton = offers.length > 0;
+      } catch (e) {
+        // ignore
+      }
+
+      // --- 4) текст про отсутствие доступных способов ---
+      try {
+        const bodyText = (document.body.innerText || "").toLowerCase();
+        if (
+          bodyText.includes("нет доступных способов") ||
+          bodyText.includes("нет доступных офферов") ||
+          bodyText.includes("нет доступных предложений")
+        ) {
+          info.hasNoOffersText = true;
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      return info;
+    }
+    """
+
+    try:
+        data = await page.evaluate(js)
+    except Exception as e:
+        data = {"evaluate_error": str(e)}
+
+    # Краткий лог в консоль
+    print(
+        "[MT-STATE] "
+        f"amountOk={data.get('amountOk')}, "
+        f"amount={data.get('amount')}, "
+        f"currencyAmount={data.get('currencyAmount')}, "
+        f"methodLabelFound={data.get('methodLabelFound')}, "
+        f"methodClickable={data.get('methodClickable')}, "
+        f"methodRect={data.get('methodRect')}, "
+        f"offersCount={data.get('offersCount')}, "
+        f"hasOfferButton={data.get('hasOfferButton')}, "
+        f"hasNoOffersText={data.get('hasNoOffersText')}"
+    )
+
+    # Полный JSON на диск
+    fname = os.path.join(LOG_DIR, f"mt_state_{session_id}_{label}_{_ts()}.json")
+    print(f"[MT-STATE] Сохраняю состояние Multitransfer → {fname}")
+    try:
+        with open(fname, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[RECORDER] Ошибка записи MT state: {e}")
+
+
+# ------------------------------------------------------------
+# СНИМОК ДЕРЕВА КЛИКАБЕЛЬНЫХ ЭЛЕМЕНТОВ
+# ------------------------------------------------------------
+
+async def snapshot_clickable_tree(page: Page, session_id: str, label: str) -> None:
+    """
+    Собираем все кликабельные элементы:
+      - button / a
+      - [role="button"]
+      - [onclick]
+      - cursor: pointer
+      - tabIndex >= 0
+
+    С координатами, видимостью, текстом и классами.
+    """
+    _ensure_log_dir()
+
+    js = """
+    () => {
+      const res = [];
+      const all = Array.from(document.querySelectorAll("*"));
+
+      for (const el of all) {
+        try {
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+
+          const clickable =
+            el.tagName === "BUTTON" ||
+            el.tagName === "A" ||
+            el.getAttribute("role") === "button" ||
+            el.hasAttribute("onclick") ||
+            style.cursor === "pointer" ||
+            el.tabIndex >= 0;
+
+          if (!clickable) continue;
+
+          const visible =
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            parseFloat(style.opacity || "1") > 0.05;
+
+          const text = (el.textContent || "")
+            .replace(/\\s+/g, " ")
+            .trim();
+
+          res.push({
+            tag: el.tagName,
+            id: el.id || null,
+            classes: el.className || "",
+            role: el.getAttribute("role") || null,
+            tabIndex: el.tabIndex,
+            text: text.slice(0, 200),
+            visible,
+            rect: {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            },
+            styles: {
+              display: style.display,
+              visibility: style.visibility,
+              opacity: style.opacity,
+              pointerEvents: style.pointerEvents,
+              cursor: style.cursor,
+              zIndex: style.zIndex,
+            },
+            dataAttrs: Array.from(el.attributes)
+              .filter(a => a.name.startsWith("data-"))
+              .map(a => ({ name: a.name, value: a.value })),
+          });
+        } catch (e) {
+          // ignore отдельные элементы
+        }
+      }
+
+      // Чтобы не улететь в мегабайты — ограничим до 500 элементов
+      return res.slice(0, 500);
+    }
+    """
+
+    try:
+        data = await page.evaluate(js)
+    except Exception as e:
+        data = {"evaluate_error": str(e)}
+
+    fname = os.path.join(LOG_DIR, f"clickable_{session_id}_{label}_{_ts()}.json")
+    print(f"[CLICKABLE] Сохраняю дерево кликабельных элементов → {fname}")
+    try:
+        with open(fname, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[RECORDER] Ошибка записи clickable tree: {e}")
+
+
+# ------------------------------------------------------------
 # СНИМОК HTML + СКРИН
 # ------------------------------------------------------------
 
@@ -251,23 +520,39 @@ async def main():
         await page.goto(BASE_URL)
 
         print("\n[RECORDER] 🔴 Теперь ты можешь:")
-        print("  1) Заполнить форму, пройти все шаги, капчу и т.п.")
-        print("  2) Когда дойдёшь до интересного места (например, finish-transfer),")
-        print("     просто НИЧЕГО не делай, а вернись в терминал и нажми Enter.")
-        print("  3) Я сделаю snapshot (window, HTML, скрин) и продолжу ждать.")
+        print("  1) Заполнить форму, пройти все шаги, капчу и т.п. ВРУЧНУЮ.")
+        print("  2) Когда дойдёшь до интересного места (после ввода суммы, после клика")
+        print("     по 'Способ перевода', после открытия списка банков и т.д.),")
+        print("     вернись в терминал и нажми Enter.")
+        print("  3) Я сделаю четыре снапшота:")
+        print("       - snapshot_window_state (window.*)")
+        print("       - snapshot_mt_state (stepsData, 'Способ перевода', офферы)")
+        print("       - snapshot_clickable_tree (все кликабельные элементы)")
+        print("       - HTML + скрин страницы")
         print("  4) Чтобы закончить — закрой окно браузера или нажми Ctrl+C.\n")
 
         try:
+            idx = 1
+            loop = asyncio.get_running_loop()
             while True:
                 # ждём Enter в терминале, чтобы сделать “контрольный снимок”
-                await asyncio.get_event_loop().run_in_executor(
+                await loop.run_in_executor(
                     None,
-                    lambda: input("[RECORDER] Нажми Enter, чтобы сделать snapshot (или Ctrl+C для выхода)... "),
+                    lambda: input(
+                        f"[RECORDER] Snapshot #{idx}. Нажми Enter (или Ctrl+C для выхода)... "
+                    ),
                 )
 
-                print("[RECORDER] Делаю snapshot текущего состояния страницы...")
-                await snapshot_window_state(page, session_id, label="manual")
-                await snapshot_page_html_and_screenshot(page, session_id, label="manual")
+                label = f"manual_{idx:03d}"
+                print(f"[RECORDER] Делаю snapshot #{idx} текущего состояния страницы...")
+
+                await snapshot_window_state(page, session_id, label=label)
+                await snapshot_mt_state(page, session_id, label=label)
+                await snapshot_clickable_tree(page, session_id, label=label)
+                await snapshot_page_html_and_screenshot(page, session_id, label=label)
+
+                print(f"[RECORDER] Snapshot #{idx} завершён.\n")
+                idx += 1
 
         except KeyboardInterrupt:
             print("\n[RECORDER] Остановлено пользователем (Ctrl+C).")

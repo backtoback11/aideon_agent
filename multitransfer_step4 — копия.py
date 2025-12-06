@@ -68,126 +68,6 @@ async def _save_screenshot(page: Page, label: str) -> Optional[bytes]:
 
 
 # ============================================================
-# АВТО-КЛИК ПРОСТОЙ CHECKBOX-КАПЧИ (SmartCaptcha) + ПОПАП
-# ============================================================
-
-async def _try_solve_checkbox_captcha(
-    page: Page,
-    timeout_ms: int = 10_000,
-) -> bool:
-    """
-    Пытаемся автоматически кликнуть по чекбокс-капче SmartCaptcha.
-
-    Актуальная вёрстка:
-      - iframe backend-а
-      - iframe с чекбоксом:
-          <iframe
-              data-testid="checkbox-iframe"
-              title="SmartCaptcha checkbox widget"
-              src="https://smartcaptcha.yandexcloud.net/checkbox...."
-          ></iframe>
-
-    Поэтому:
-      1) целимся строго в iframe[data-testid="checkbox-iframe"],
-      2) внутри него ищем .CheckboxCaptcha-Button и кликаем.
-    """
-    print("[CAPTCHA] Пытаюсь автоматически кликнуть по checkbox-капче (SmartCaptcha)...")
-
-    try:
-        # Берём iframe именно чекбокса, чтобы не ловить strict mode по двум iframe
-        frame_locator = page.frame_locator("iframe[data-testid='checkbox-iframe']")
-        checkbox = frame_locator.locator(".CheckboxCaptcha-Button")
-
-        # ждём появления кнопки в iframe
-        await checkbox.wait_for(timeout=timeout_ms)
-
-        # небольшая пауза как в JS
-        try:
-            await page.wait_for_timeout(1000)
-        except Exception:
-            pass
-
-        await checkbox.click()
-        print("[CAPTCHA] ✅ Checkbox-капча кликнута автоматически.")
-        return True
-
-    except PlaywrightTimeoutError:
-        print("[CAPTCHA] ⏱ iframe[data-testid='checkbox-iframe'] или .CheckboxCaptcha-Button "
-              "не появились за отведённое время, продолжаем без авто-клика.")
-        return False
-    except Exception as e:
-        print(f"[CAPTCHA] ⚠ Ошибка при попытке кликнуть капчу: {e}")
-        try:
-            await _save_html(page, label="captcha_error_step4")
-            await _save_screenshot(page, label="captcha_error_step4")
-        except Exception:
-            pass
-        return False
-
-
-async def _try_click_post_captcha_continue_popup(
-    page: Page,
-    timeout_ms: int = 20_000,
-) -> bool:
-    """
-    После успешной капчи иногда появляется попап с синей кнопкой 'Продолжить'
-    и спиннером (ожидание формирования QR).
-
-    Здесь:
-      - ищем dialog/MUI-диалог,
-      - внутри ищем кнопку 'Продолжить',
-      - пытаемся кликнуть.
-    """
-    print("[CAPTCHA] Ищу попап после капчи с кнопкой 'Продолжить'...")
-
-    deadline = time.time() + timeout_ms / 1000.0
-
-    while time.time() < deadline:
-        try:
-            # Сначала обычный dialog по роли
-            dialog = page.get_by_role("dialog")
-            count = 0
-            try:
-                count = await dialog.count()
-            except Exception:
-                count = 0
-
-            if count == 0:
-                # fallback: MUI-диалоги
-                dialog = page.locator(".MuiDialog-root, .MuiDialog-paper")
-                try:
-                    count = await dialog.count()
-                except Exception:
-                    count = 0
-
-            if count > 0:
-                dlg = dialog.nth(0)
-                # Пробуем найти кнопку "Продолжить" внутри диалога
-                btn = dlg.get_by_role("button", name="Продолжить")
-                try:
-                    if await btn.count() > 0:
-                        b = btn.first
-                        await b.scroll_into_view_if_needed()
-                        await b.click()
-                        print("[CAPTCHA] ✅ Нажата кнопка 'Продолжить' в попапе после капчи.")
-                        return True
-                except Exception as e:
-                    print(f"[CAPTCHA] ⚠ Ошибка при клике по кнопке 'Продолжить' в попапе: {e}")
-
-        except Exception:
-            pass
-
-        # ждём немного и пробуем ещё раз, пока не истечёт timeout
-        try:
-            await page.wait_for_timeout(1000)
-        except Exception:
-            await asyncio.sleep(1)
-
-    print("[CAPTCHA] Попап 'Продолжить' после капчи не найден (timeout по диалогу).")
-    return False
-
-
-# ============================================================
 # PARSING DEEPLINK FROM TEXT
 # ============================================================
 
@@ -340,17 +220,14 @@ async def step4_wait_for_deeplink(page: Page, invoice) -> str:
     Финальный шаг (адаптация finish_transfer.js):
 
       1) Включаем "heartbeat"-лог — раз в 5 секунд пишем текущий URL.
-      2) Навешиваем listener на все ответы и ждём /confirm (POST на CONFIRM_PATH).
-      3) После подключения listener:
-           - пробуем автоматически решить чекбокс-капчу SmartCaptcha,
-           - пробуем нажать синюю кнопку 'Продолжить' в попапе.
-      4) Параллельно (необязательно) ждём перехода на /finish-transfer.
-      5) Разбираем JSON, достаём externalData.payload.
-      6) Пытаемся вытащить NSPK-URL (qr.nspk.ru и т.п.).
-      7) При успехе:
+      2) Ждём ответ /confirm (POST на CONFIRM_PATH) через событие "response" + asyncio.Future.
+      3) Параллельно (необязательно) ждём перехода на /finish-transfer.
+      4) Разбираем JSON, достаём externalData.payload.
+      5) Пытаемся вытащить NSPK-URL (qr.nspk.ru и т.п.).
+      6) При успехе:
            - пишем в БД (status='created', deeplink),
            - отправляем webhook (status='created').
-      8) При любой ошибке:
+      7) При любой ошибке:
            - пишем статус 'error' в БД,
            - webhook с status='No Terminals',
            - выбрасываем RuntimeError.
@@ -412,30 +289,6 @@ async def step4_wait_for_deeplink(page: Page, invoice) -> str:
                 return
 
         page.on("response", _on_response)
-
-        # ----------------------------------------------------
-        # ⚙️ Сразу после подключения listener пробуем автодействия:
-        #    - чекбокс-капча
-        #    - попап "Продолжить"
-        # Всё это best-effort: если не получилось — просто ждём ручных действий.
-        # ----------------------------------------------------
-        try:
-            solved = await _try_solve_checkbox_captcha(page)
-            if solved:
-                print("[STEP4] ✅ CAPTCHA (checkbox) решена автоматически на STEP4.")
-            else:
-                print("[STEP4] CAPTCHA (checkbox) не найдена или уже решена — ждём ручные действия.")
-        except Exception as e:
-            print(f"[STEP4] ⚠ Ошибка при автоклике капчи на STEP4: {e}")
-
-        try:
-            popup_clicked = await _try_click_post_captcha_continue_popup(page)
-            if popup_clicked:
-                print("[STEP4] ✅ Попап после капчи обработан (кнопка 'Продолжить' нажата).")
-            else:
-                print("[STEP4] Попап после капчи отсутствует или не был нажат автоматически.")
-        except Exception as e:
-            print(f"[STEP4] ⚠ Ошибка при обработке попапа после капчи на STEP4: {e}")
 
         try:
             timeout_sec = CONFIRM_MAX_WAIT_MS / 1000.0

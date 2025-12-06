@@ -1,12 +1,41 @@
+# =============== PYTHON ==================
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# =============== ENV ======================
+.env
+*.env
+
+# =============== PLAYWRIGHT ===============
 debug/
+playwright-report/
+playwright/.cache/
+test-results/
+screenshots/
+
+# =============== LOGS ======================
 *.log
+
+# =============== IDE / SYSTEM =============
 .idea/
 .vscode/
-/playwright-report/
-/playwright/.cache/
-.env
+.DS_Store
+Thumbs.db
+
+# =============== PROJECT SPECIFIC ==========
+# Исключаем SQLite БД — нельзя пушить в GitHub!
+*.db
+
+# Временные и вспомогательные файлы
 vision_qr.py
 Бекап/
+backup/
+копия/
+Бекапы/
+
+# Мусорные unicode-файлы, которые появляются от Finder
+*копия*.py
+*копия*
